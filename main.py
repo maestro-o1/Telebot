@@ -1,9 +1,13 @@
+import asyncio
+import uvloop
 from datetime import datetime, timedelta
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-import asyncio
 import json
 import os
+
+# uvloop ni ishga tushirish (MUHIM!)
+uvloop.install()
 
 # SOZLAMALAR
 API_ID = 35058290
@@ -147,7 +151,6 @@ async def handle_callbacks(client, callback_query):
         await callback_query.answer("Ruxsat yo'q!")
         return
     
-    # ORQAGA
     if data == "back_to_menu":
         await callback_query.message.edit_text(
             f"✅ **ABADIY BLOKLASH BOTI**\n\n"
@@ -157,7 +160,6 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
     
-    # KANAL TANLASH
     elif data == "menu_select":
         selected_channel[user_id] = {
             "chat_id": YOUR_CHANNEL_ID,
@@ -174,7 +176,6 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
     
-    # A'ZOLAR
     elif data == "menu_members":
         if user_id not in selected_channel:
             await callback_query.message.edit_text(
@@ -196,7 +197,6 @@ async def handle_callbacks(client, callback_query):
             )
         await callback_query.answer()
     
-    # BLOKLASH MENYUSI
     elif data == "menu_ban":
         ban_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏱️ 5 minut", callback_data="ban_5m"),
@@ -220,7 +220,6 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
     
-    # VAQT TANLANGANDA
     elif data.startswith("ban_"):
         time_str = data.replace("ban_", "")
         await callback_query.message.edit_text(
@@ -235,7 +234,6 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
     
-    # BLOKLASHLAR RO'YXATI
     elif data == "menu_list":
         if YOUR_CHANNEL_ID not in scheduled or not scheduled[YOUR_CHANNEL_ID]:
             text = "📭 Bloklashlar yo'q"
@@ -253,7 +251,6 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
     
-    # BEKOR QILISH
     elif data == "menu_cancel":
         await callback_query.message.edit_text(
             f"❌ **BEKOR QILISH**\n\n"
@@ -265,7 +262,6 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
     
-    # TARIX
     elif data == "menu_history":
         text = f"📜 **TARIX:** {len(user_history)} ta foydalanuvchi"
         await callback_query.message.edit_text(
@@ -276,22 +272,16 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
 
-# ==================== YANGI A'ZO (MUAMMO YECHILDI) ====================
+# ==================== YANGI A'ZO ====================
 @app.on_chat_member_updated()
 async def on_chat_member_update(client, chat_member_updated):
     try:
         chat = chat_member_updated.chat
         new_member = chat_member_updated.new_chat_member
         
-        # Faqat sizning kanalingizni tekshirish
         if chat.id != YOUR_CHANNEL_ID:
             return
         
-        # Faqat kanal turini tekshirish
-        if chat.type != enums.ChatType.CHANNEL:
-            return
-        
-        # Yangi a'zo qo'shilganini tekshirish
         if not new_member:
             return
         
@@ -299,11 +289,9 @@ async def on_chat_member_update(client, chat_member_updated):
         if user.is_bot:
             return
         
-        # Foydalanuvchi ma'lumotlari
         user_id = user.id
         full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
         
-        # Tarixga qo'shish
         user_history[user_id] = {
             "username": f"@{user.username}" if user.username else "no username",
             "full_name": full_name,
@@ -312,7 +300,6 @@ async def on_chat_member_update(client, chat_member_updated):
         }
         save_data()
         
-        # Sizga xabar yuborish
         await client.send_message(
             YOUR_ID,
             f"👤 **YANGI A'ZO!**\n\n"
@@ -320,8 +307,7 @@ async def on_chat_member_update(client, chat_member_updated):
             f"👤 Ism: {full_name}"
         )
     except Exception as e:
-        print(f"Xatolik (lekin crash emas): {e}")
-        # Crash bo'lmasligi uchun xatolikni yutib yuboramiz
+        print(f"Xatolik: {e}")
 
 # ==================== KOMANDALAR ====================
 @app.on_message(filters.command("select"))
