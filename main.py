@@ -203,7 +203,7 @@ async def my_adminships(client, message):
     text += f"\n📊 Jami: {len(active_channels)} ta kanal"
     await message.reply_text(text)
 
-# ==================== KANALNI TANLASH ====================
+# ==================== KANALNI TANLASH (TO'G'RILANGAN) ====================
 @app.on_message(filters.command("select"))
 async def select_channel(client, message):
     """Ishlash uchun kanalni tanlash"""
@@ -218,36 +218,71 @@ async def select_channel(client, message):
     if len(args) < 2:
         await message.reply_text(
             "❌ **Kanal ID sini yozing!**\n\n"
-            "Misol: /select -100123456789\n\n"
-            "📌 Kanal ID sini topish:\n"
-            "• Kanalda @uzdramadubbot salom deb yozing\n"
-            "• Bot javobida ID ko'rinadi\n"
-            "• Yoki @getidsbot dan foydalaning"
+            "Misol: /select -1003726881716\n\n"
+            "📌 **SIZNING KANAL ID INGIZ:**\n"
+            "Agar kanalingizda @uzdramadubbot salom deb yozgan bo'lsangiz,\n"
+            "bot sizga ID ni chiqargan: `-1003726881716`\n\n"
+            "Shu ID ni ishlating: `/select -1003726881716`"
         )
         return
     
     try:
-        chat_id = int(args[1]) if args[1].lstrip('-').isdigit() else args[1]
+        chat_id = int(args[1].strip())
         
-        # Kanalni tekshirish
-        try:
-            chat = await client.get_chat(chat_id)
-        except:
+        await message.reply_text("⏳ Tekshirilmoqda...")
+        
+        # Cache'ni tozalash uchun bir necha marta tekshirish
+        chat = None
+        for attempt in range(3):
+            try:
+                chat = await client.get_chat(chat_id)
+                await asyncio.sleep(1)  # Cache yangilanishi uchun kutish
+            except:
+                pass
+        
+        if not chat:
             await message.reply_text(f"❌ Kanal topilmadi! ID: {args[1]} noto'g'ri.")
             return
         
-        # Bot adminligini tekshirish
-        try:
-            bot_member = await client.get_chat_member(chat_id, "me")
-            if bot_member.status not in ["administrator", "creator"]:
-                await message.reply_text(
-                    f"❌ **Bu kanalda bot admin emas!**\n\n"
-                    f"Kanal: {chat.title}\n\n"
-                    f"Botni kanalga admin qilib, qayta urinib ko'ring."
-                )
-                return
-        except Exception as e:
-            await message.reply_text(f"❌ Bot adminligini tekshirishda xatolik: {str(e)}")
+        # Bot adminligini tekshirish (cache'siz)
+        is_admin = False
+        admin_error = ""
+        
+        for attempt in range(3):
+            try:
+                bot_member = await client.get_chat_member(chat_id, "me")
+                if bot_member.status in ["administrator", "creator"]:
+                    is_admin = True
+                    break
+                await asyncio.sleep(1)
+            except Exception as e:
+                admin_error = str(e)
+                await asyncio.sleep(1)
+        
+        if not is_admin:
+            # Kanalda botni qidirish
+            try:
+                async for member in client.get_chat_members(chat_id):
+                    if member.user.is_self:
+                        if member.status in ["administrator", "creator"]:
+                            is_admin = True
+                            break
+            except:
+                pass
+        
+        if not is_admin:
+            await message.reply_text(
+                f"❌ **Bu kanalda bot admin emas!**\n\n"
+                f"Kanal: {chat.title}\n"
+                f"ID: `{chat.id}`\n\n"
+                f"📌 **YECHIM:**\n"
+                f"1. Kanalda adminlar ro'yxatiga kiring\n"
+                f"2. `@uzdramadubbot` ni olib tashlang (Remove)\n"
+                f"3. Qayta admin qiling (Add Admin)\n"
+                f"4. **'Foydalanuvchilarni bloklash' huquqini bering**\n"
+                f"5. 10 soniya kuting (cache yangilanishi uchun)\n"
+                f"6. Yana /select -1003726881716 bosing"
+            )
             return
         
         # Tanlangan kanalni saqlash
@@ -256,7 +291,7 @@ async def select_channel(client, message):
             "title": chat.title
         }
         
-        # Kanalni bot_channels ga qo'shish (agar yo'q bo'lsa)
+        # Kanalni bot_channels ga qo'shish
         if chat.id not in bot_channels:
             bot_channels[chat.id] = {
                 "title": chat.title,
@@ -268,7 +303,7 @@ async def select_channel(client, message):
         members_count = chat.members_count if hasattr(chat, 'members_count') else "noma'lum"
         
         await message.reply_text(
-            f"✅ **KANAL TANLANDI**\n\n"
+            f"✅ **KANAL MUVOFFAQIYATLI TANLANDI!**\n\n"
             f"📌 **Nomi:** {chat.title}\n"
             f"🆔 **ID:** `{chat.id}`\n"
             f"👥 **A'zolar:** {members_count}\n\n"
@@ -279,6 +314,8 @@ async def select_channel(client, message):
             f"🔹 /list - Bloklashlar ro'yxati"
         )
         
+    except ValueError:
+        await message.reply_text("❌ Noto'g'ri ID formati! ID raqam bo'lishi kerak.\nMisol: /select -1003726881716")
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
 
@@ -296,7 +333,8 @@ async def get_members(client, message):
         await message.reply_text(
             "❌ **Avval kanal tanlang!**\n\n"
             "🔹 /myadminships - Kanallar ro'yxati\n"
-            "🔹 /select [kanal_id] - Kanalni tanlash"
+            "🔹 /select [kanal_id] - Kanalni tanlash\n\n"
+            "📌 Masalan: /select -1003726881716"
         )
         return
     
@@ -492,7 +530,7 @@ async def set_ban_by_id(client, message):
             chat_id = int(args[3])
         
         if not chat_id:
-            await message.reply_text("❌ Kanal ID sini ham yozing yoki avval kanal tanlang!")
+            await message.reply_text("❌ Kanal ID sini ham yozing yoki avval kanal tanlang!\nMisol: /setbanid 123456789 30kun -1003726881716")
             return
         
         # Kanalni tekshirish
@@ -677,6 +715,15 @@ def check_bans_background():
                                 
                                 await app.ban_chat_member(chat_id, user_id)
                                 print(f"✅ Bloklandi: {username}")
+                                
+                                # Kanalga xabar
+                                try:
+                                    await app.send_message(
+                                        chat_id,
+                                        f"🚫 **{username}** bloklandi!\n📅 Vaqt: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                                    )
+                                except:
+                                    pass
                                 
                                 del scheduled[chat_id][user_id]
                                 
