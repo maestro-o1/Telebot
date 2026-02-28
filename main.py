@@ -16,8 +16,8 @@ app = Client("kanal_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 # Ma'lumotlar ombori
 scheduled = {}
 user_history = {}
-bot_channel = None  # Kanal ID saqlanadigan joy
-setup_done = {}  # Sozlanganligini tekshirish
+bot_channel = None  # Global o'zgaruvchi
+setup_done = {}
 
 # ==================== MA'LUMOTLARNI SAQLASH ====================
 DATA_FILE = "bot_data.json"
@@ -51,8 +51,8 @@ def save_data():
         
         with open(DATA_FILE, "w") as f:
             json.dump(data, f, indent=2)
-    except:
-        pass
+    except Exception as e:
+        print(f"Save error: {e}")
 
 def load_data():
     try:
@@ -81,8 +81,8 @@ def load_data():
                     "join_time": datetime.fromisoformat(hist_data["join_time"]),
                     "status": hist_data.get("status", "")
                 }
-    except:
-        pass
+    except Exception as e:
+        print(f"Load error: {e}")
 
 load_data()
 
@@ -133,13 +133,18 @@ async def start_command(client, message):
     user_id = message.from_user.id
     
     # Agar bot kanalga ulangan bo'lsa
-    if bot_channel:
+    if bot_channel is not None:
         try:
             # Kanal adminligini tekshirish
             is_admin = await check_channel_admin(client, bot_channel)
             if is_admin:
                 setup_done[user_id] = True
-                await show_main_menu(client, message)
+                await message.reply_text(
+                    f"✅ **ASOSIY MENYU**\n\n"
+                    f"📌 Kanal ID: `{bot_channel}`\n\n"
+                    f"Quyidagi tugmalardan birini tanlang:",
+                    reply_markup=get_main_menu()
+                )
                 return
         except:
             pass
@@ -152,7 +157,6 @@ async def start_command(client, message):
         "1. Kanalga @uzdramadubbot ni admin qiling\n"
         "2. Kanalda @uzdramadubbot deb yozing\n"
         "3. Bot sizga ID ni yuboradi\n\n"
-        "Yoki @getidsbot dan foydalaning.\n\n"
         "🔹 Kanal ID ni yozib yuboring (masalan: -100123456789)"
     )
 
@@ -219,14 +223,6 @@ def get_main_menu():
         [InlineKeyboardButton("🔄 KANALNI YANGILASH", callback_data="menu_reload")]
     ])
 
-async def show_main_menu(client, message):
-    await message.reply_text(
-        f"✅ **ASOSIY MENYU**\n\n"
-        f"📌 Kanal ID: `{bot_channel}`\n\n"
-        f"Quyidagi tugmalardan birini tanlang:",
-        reply_markup=get_main_menu()
-    )
-
 # ==================== TUGMALAR ====================
 @app.on_callback_query()
 async def handle_callbacks(client, callback_query):
@@ -237,7 +233,7 @@ async def handle_callbacks(client, callback_query):
         await callback_query.answer("Ruxsat yo'q!")
         return
     
-    if not bot_channel:
+    if bot_channel is None:
         await callback_query.message.edit_text(
             "❌ Kanal ulanmagan! /start ni bosing."
         )
@@ -376,7 +372,7 @@ async def members_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if not bot_channel:
+    if bot_channel is None:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -433,7 +429,7 @@ async def setban_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if not bot_channel:
+    if bot_channel is None:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -463,15 +459,15 @@ async def setban_cmd(client, message):
         
         sana = toshkent_vaqti(ban_time).strftime("%d.%m.%Y %H:%M")
         await message.reply_text(f"✅ @{username} {time_str} dan keyin bloklanadi\n📅 {sana}")
-    except:
-        await message.reply_text("❌ Xatolik")
+    except Exception as e:
+        await message.reply_text(f"❌ Xatolik: {str(e)}")
 
 @app.on_message(filters.command("setbanid"))
 async def setbanid_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if not bot_channel:
+    if bot_channel is None:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -501,15 +497,15 @@ async def setbanid_cmd(client, message):
         
         sana = toshkent_vaqti(ban_time).strftime("%d.%m.%Y %H:%M")
         await message.reply_text(f"✅ ID:{user_id} {time_str} dan keyin bloklanadi\n📅 {sana}")
-    except:
-        await message.reply_text("❌ Xatolik")
+    except Exception as e:
+        await message.reply_text(f"❌ Xatolik: {str(e)}")
 
 @app.on_message(filters.command("list"))
 async def list_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if not bot_channel:
+    if bot_channel is None:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -528,7 +524,7 @@ async def cancel_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if not bot_channel:
+    if bot_channel is None:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -552,8 +548,8 @@ async def cancel_cmd(client, message):
                 del scheduled[bot_channel][user.id]
                 save_data()
                 await message.reply_text("✅ Bloklash bekor qilindi")
-    except:
-        await message.reply_text("❌ Topilmadi")
+    except Exception as e:
+        await message.reply_text(f"❌ Xatolik: {str(e)}")
 
 @app.on_message(filters.command("history"))
 async def history_cmd(client, message):
@@ -566,6 +562,9 @@ async def history_cmd(client, message):
 @app.on_chat_member_updated()
 async def on_chat_member_update(client, chat_member_updated):
     try:
+        if bot_channel is None:
+            return
+        
         if chat_member_updated.chat.id != bot_channel:
             return
         
@@ -608,8 +607,8 @@ async def on_chat_member_update(client, chat_member_updated):
             f"Bloklash vaqtini tanlang:",
             reply_markup=ban_keyboard
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"YangI a'zo xatosi: {e}")
 
 # ==================== TEZKOR BLOKLASH ====================
 @app.on_callback_query(filters.regex(r"^quick_"))
@@ -680,10 +679,10 @@ async def check_bans():
                             
                             del scheduled[chat_id][user_id]
                             save_data()
-                        except:
-                            pass
-        except:
-            pass
+                        except Exception as e:
+                            print(f"Bloklash xatosi: {e}")
+        except Exception as e:
+            print(f"Tekshirish xatosi: {e}")
         await asyncio.sleep(60)
 
 # ==================== AVTOMATIK SAQLASH ====================
