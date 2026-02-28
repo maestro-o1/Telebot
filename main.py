@@ -34,11 +34,15 @@ def parse_time(time_str):
                 break
         
         if not number:
-            return 30
+            return 366 * 24 * 60  # Abadiy (agar raqam bo'lmasa)
             
         number = int(number)
         
-        if 'kun' in time_str:
+        if 'k' in time_str:  # kun (masalan: 5k, 10k, 20k, 30k, 40k)
+            return number * 24 * 60
+        elif 'm' in time_str:  # minut (masalan: 5m)
+            return number
+        elif 'kun' in time_str:
             return number * 24 * 60
         elif 'oy' in time_str:
             return number * 30 * 24 * 60
@@ -47,13 +51,9 @@ def parse_time(time_str):
         elif 'minut' in time_str:
             return number
         else:
-            return number
+            return number * 24 * 60  # Agar birlik bo'lmasa, kun deb hisobla
     except:
-        return 30
-
-def toshkent_vaqti(vaqt):
-    """Server vaqtini Toshkent vaqtiga o'tkazish (+5 soat)"""
-    return vaqt + timedelta(hours=5)
+        return 366 * 24 * 60  # Xato bo'lsa abadiy
 
 def is_owner(user_id):
     """Foydalanuvchi bot egasi ekanligini tekshirish"""
@@ -67,21 +67,28 @@ async def start_command(client, message):
     
     if is_owner(user_id):
         await message.reply_text(
-            "✅ **VAQTLI BLOKLASH BOTI**\n\n"
+            "✅ **ABADIY BLOKLASH BOTI**\n\n"
             "👤 **Xush kelibsiz, @maestro_o!**\n\n"
-            "**📌 SIZNING KANALINGIZ:**\n"
-            f"🆔 ID: `{YOUR_CHANNEL_ID}`\n"
-            f"🔹 /select - Kanalni tanlash\n\n"
-            "**📌 BOSHQA KOMANDALAR:**\n"
+            "**📌 QISQA KOMANDALAR:**\n"
+            "🔹 /setban @user 5m  - 5 minutdan keyin abadiy\n"
+            "🔹 /setban @user 10k - 10 kundan keyin abadiy\n"
+            "🔹 /setban @user 20k - 20 kundan keyin abadiy\n"
+            "🔹 /setban @user 30k - 30 kundan keyin abadiy\n"
+            "🔹 /setban @user 40k - 40 kundan keyin abadiy\n\n"
+            "**📌 ID ORQALI:**\n"
+            "🔹 /setbanid 123456789 5m  - 5 minut\n"
+            "🔹 /setbanid 123456789 10k - 10 kun\n"
+            "🔹 /setbanid 123456789 20k - 20 kun\n\n"
+            "**📌 BOSHQA:**\n"
+            "🔹 /select - Kanalni tanlash\n"
             "🔹 /members - A'zolar ro'yxati\n"
-            "🔹 /setbanid [user_id] 30kun - Bloklash\n"
             "🔹 /list - Bloklashlar ro'yxati\n"
             "🔹 /cancelban @user/ID - Bekor qilish"
         )
     else:
         await message.reply_text("❌ Sizga ruxsat yo'q!")
 
-# ==================== KANALNI TANLASH (TO'G'RILANGAN) ====================
+# ==================== KANALNI TANLASH ====================
 @app.on_message(filters.command("select"))
 async def select_channel(client, message):
     """Kanalni tanlash"""
@@ -96,67 +103,34 @@ async def select_channel(client, message):
     await message.reply_text("⏳ Tekshirilmoqda...")
     
     try:
-        # Kanal ma'lumotlarini olish
         chat = await client.get_chat(chat_id)
         
-        # MUHIM: Cache'ni tozalash uchun bir necha marta tekshirish
+        # Bot adminligini tekshirish
         is_admin = False
-        admin_status = None
-        
-        # 1-usul: get_chat_member bilan tekshirish (3 marta)
         for i in range(3):
             try:
                 bot_member = await client.get_chat_member(chat_id, "me")
-                print(f"Tekshirish {i+1}: {bot_member.status}")
                 if bot_member.status in ["administrator", "creator"]:
                     is_admin = True
-                    admin_status = bot_member.status
                     break
-                await asyncio.sleep(2)  # 2 soniya kutish
-            except Exception as e:
-                print(f"Xatolik {i+1}: {e}")
-        
-        # 2-usul: Agar topilmasa, adminlar ro'yxatidan qidirish
-        if not is_admin:
-            async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
-                if member.user.is_self:
-                    is_admin = True
-                    admin_status = member.status
-                    print(f"Adminlar ro'yxatidan topildi: {member.status}")
-                    break
+                await asyncio.sleep(1)
+            except:
+                pass
         
         if not is_admin:
-            # Adminlar ro'yxatini ko'rsatish
-            admins_text = "👥 **KANAL ADMINLARI:**\n"
-            admin_count = 0
-            
-            async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
-                admin_count += 1
-                user = member.user
-                status_text = "✅" if user.is_self else "•"
-                name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-                admins_text += f"{status_text} @{user.username if user.username else 'no username'} - {member.status}\n"
-            
             await message.reply_text(
                 f"❌ **BOT ADMIN EMAS!**\n\n"
                 f"Kanal: {chat.title}\n"
                 f"ID: `{chat_id}`\n\n"
-                f"{admins_text}\n\n"
-                f"📌 **YECHIM:**\n"
-                f"1. Bot adminlar ro'yxatida bormi? Yuqoriga qarang\n"
-                f"2. Agar 'ChatMemberStatus.ADMINISTRATOR' deb yozilgan bo'lsa,\n"
-                f"   bu xato - Telegram cache muammosi\n"
-                f"3. 1-2 daqiqa kuting va /select ni qayta bosing"
+                f"📌 Botni admin qiling va qayta urinib ko'ring."
             )
             return
         
-        # Agar shu yerga kelsa, bot admin ekan
         selected_channel[user_id] = {
             "chat_id": chat.id,
             "title": chat.title
         }
         
-        # Kanalni bot_channels ga qo'shish
         bot_channels[chat.id] = {
             "title": chat.title,
             "username": chat.username,
@@ -170,83 +144,99 @@ async def select_channel(client, message):
             f"✅ **KANAL TANLANDI!**\n\n"
             f"📌 **Nomi:** {chat.title}\n"
             f"🆔 **ID:** `{chat.id}`\n"
-            f"👥 **A'zolar:** {members_count}\n"
-            f"🤖 **Bot status:** {admin_status}\n\n"
+            f"👥 **A'zolar:** {members_count}\n\n"
             f"📋 **Endi quyidagilarni qilishingiz mumkin:**\n"
             f"🔹 /members - A'zolar ro'yxati\n"
-            f"🔹 /setbanid [user_id] 30kun - Bloklash\n"
-            f"🔹 /list - Bloklashlar ro'yxati"
+            f"🔹 /setban @user 30k - Bloklash (30 kundan keyin)\n"
+            f"🔹 /setbanid 123456789 5m - ID orqali"
         )
         
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
 
-# ==================== A'ZOLAR RO'YXATI ====================
-@app.on_message(filters.command("members"))
-async def get_members(client, message):
-    """Kanal a'zolarini ko'rsatish"""
+# ==================== USERNAME ORQALI BLOKLASH (ABADIY) ====================
+@app.on_message(filters.command("setban"))
+async def set_ban(client, message):
+    """Username orqali bloklashni rejalashtirish (abadiy)"""
     user_id = message.from_user.id
     
     if not is_owner(user_id):
         await message.reply_text("❌ Sizga ruxsat yo'q!")
         return
-    
-    if user_id not in selected_channel:
-        await message.reply_text("❌ Avval /select ni bosing!")
+
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply_text(
+            "❌ **Noto'g'ri format!**\n\n"
+            "Misol:\n"
+            "/setban @user 5m  - 5 minut\n"
+            "/setban @user 10k - 10 kun\n"
+            "/setban @user 20k - 20 kun\n"
+            "/setban @user 30k - 30 kun\n"
+            "/setban @user 40k - 40 kun"
+        )
         return
-    
-    chat_id = selected_channel[user_id]["chat_id"]
-    channel_title = selected_channel[user_id]["title"]
-    
-    await message.reply_text(f"⏳ A'zolar yuklanmoqda...")
-    
+
+    username = args[1].replace("@", "")
+    time_str = args[2]
+
     try:
-        members_with_username = []
-        members_without_username = []
+        # Foydalanuvchini tekshirish
+        try:
+            user = await client.get_users(username)
+        except:
+            await message.reply_text(f"❌ @{username} topilmadi!")
+            return
         
-        async for member in client.get_chat_members(chat_id):
-            user = member.user
+        # Qaysi kanalda bloklash kerak?
+        chat_id = YOUR_CHANNEL_ID
+        if user_id in selected_channel:
+            chat_id = selected_channel[user_id]["chat_id"]
+        
+        # Vaqtni hisoblash
+        minutes = parse_time(time_str)
+        
+        # Abadiy bloklash uchun (366 kundan ortiq)
+        if minutes < 366 * 24 * 60:
+            # Agar berilgan vaqt 366 kundan kam bo'lsa, o'sha vaqtdan keyin abadiy
+            ban_time = datetime.now() + timedelta(minutes=minutes)
+            ban_type = f"{time_str} dan keyin abadiy"
+        else:
+            # To'g'ridan-to'g'ri abadiy
+            ban_time = datetime.now() + timedelta(minutes=minutes)
+            ban_type = "abadiy"
+        
+        # Bloklashni rejalashtirish
+        if chat_id not in scheduled:
+            scheduled[chat_id] = {}
             
-            user_info = {
-                "id": user.id,
-                "first_name": user.first_name or "",
-                "last_name": user.last_name or "",
-                "username": user.username
-            }
-            
-            if user.username:
-                members_with_username.append(user_info)
-            else:
-                members_without_username.append(user_info)
+        scheduled[chat_id][user.id] = {
+            "username": username,
+            "time": ban_time,
+            "user_id": user.id,
+            "permanent": True  # Abadiy bloklash
+        }
         
-        text = f"📋 **KANAL A'ZOLARI**\n📌 **{channel_title}**\n\n"
+        # Vaqtni formatlash
+        sana = ban_time.strftime("%d.%m.%Y %H:%M")
         
-        text += f"**📱 USERNAME BORLAR ({len(members_with_username)}):**\n"
-        for i, user in enumerate(members_with_username[:20]):
-            name = f"{user['first_name']} {user['last_name']}".strip()
-            text += f"{i+1}. @{user['username']} - {name[:30]}\n"
-        
-        if len(members_with_username) > 20:
-            text += f"... va yana {len(members_with_username)-20} ta\n"
-        
-        text += f"\n**❌ USERNAME YO'QLAR ({len(members_without_username)}):**\n"
-        for i, user in enumerate(members_without_username[:20]):
-            name = f"{user['first_name']} {user['last_name']}".strip()
-            text += f"{i+1}. ID: `{user['id']}` - {name[:30]}\n"
-        
-        if len(members_without_username) > 20:
-            text += f"... va yana {len(members_without_username)-20} ta\n"
-        
-        text += f"\n📊 **JAMI: {len(members_with_username) + len(members_without_username)} ta a'zo**\n"
-        
-        await message.reply_text(text)
-        
+        await message.reply_text(
+            f"✅ **BLOKLASH REJALASHTIRILDI**\n\n"
+            f"👤 **Foydalanuvchi:** @{username}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"⏰ **Vaqt:** {time_str}\n"
+            f"📅 **Sana:** {sana}\n"
+            f"🚫 **Tur:** {ban_type}\n\n"
+            f"⚠️ Vaqt kelganda ABADIY bloklanadi!"
+        )
+
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
 
-# ==================== ID ORQALI BLOKLASH ====================
+# ==================== ID ORQALI BLOKLASH (ABADIY) ====================
 @app.on_message(filters.command("setbanid"))
 async def set_ban_by_id(client, message):
+    """ID orqali bloklashni rejalashtirish (abadiy)"""
     user_id = message.from_user.id
     
     if not is_owner(user_id):
@@ -255,14 +245,22 @@ async def set_ban_by_id(client, message):
     
     args = message.text.split()
     if len(args) < 3:
-        await message.reply_text("❌ /setbanid [user_id] [vaqt]\nMisol: /setbanid 123456789 30kun")
+        await message.reply_text(
+            "❌ **Noto'g'ri format!**\n\n"
+            "Misol:\n"
+            "/setbanid 123456789 5m  - 5 minut\n"
+            "/setbanid 123456789 10k - 10 kun\n"
+            "/setbanid 123456789 20k - 20 kun\n"
+            "/setbanid 123456789 30k - 30 kun\n"
+            "/setbanid 123456789 40k - 40 kun"
+        )
         return
     
     try:
         target_user_id = int(args[1])
         time_str = args[2]
         
-        # Kanal ID ni aniqlash
+        # Qaysi kanalda bloklash kerak?
         chat_id = YOUR_CHANNEL_ID
         if user_id in selected_channel:
             chat_id = selected_channel[user_id]["chat_id"]
@@ -281,9 +279,20 @@ async def set_ban_by_id(client, message):
             await message.reply_text(f"❌ ID {target_user_id} topilmadi!")
             return
         
+        # Vaqtni hisoblash
         minutes = parse_time(time_str)
-        ban_time = datetime.now() + timedelta(minutes=minutes)
         
+        # Abadiy bloklash uchun (366 kundan ortiq)
+        if minutes < 366 * 24 * 60:
+            # Agar berilgan vaqt 366 kundan kam bo'lsa, o'sha vaqtdan keyin abadiy
+            ban_time = datetime.now() + timedelta(minutes=minutes)
+            ban_type = f"{time_str} dan keyin abadiy"
+        else:
+            # To'g'ridan-to'g'ri abadiy
+            ban_time = datetime.now() + timedelta(minutes=minutes)
+            ban_type = "abadiy"
+        
+        # Bloklashni rejalashtirish
         if chat_id not in scheduled:
             scheduled[chat_id] = {}
             
@@ -291,11 +300,11 @@ async def set_ban_by_id(client, message):
             "username": user.username or f"ID:{user.id}",
             "time": ban_time,
             "user_id": user.id,
-            "chat_title": chat.title
+            "permanent": True  # Abadiy bloklash
         }
         
-        toshkent_vaqt = toshkent_vaqti(ban_time)
-        sana = toshkent_vaqt.strftime("%d.%m.%Y %H:%M")
+        # Vaqtni formatlash
+        sana = ban_time.strftime("%d.%m.%Y %H:%M")
         
         display_name = f"@{user.username}" if user.username else f"{user.first_name}"
         
@@ -305,8 +314,112 @@ async def set_ban_by_id(client, message):
             f"👤 **Foydalanuvchi:** {display_name}\n"
             f"🆔 **ID:** `{user.id}`\n"
             f"⏰ **Vaqt:** {time_str}\n"
-            f"📅 **Sana:** {sana}"
+            f"📅 **Sana:** {sana}\n"
+            f"🚫 **Tur:** {ban_type}\n\n"
+            f"⚠️ Vaqt kelganda ABADIY bloklanadi!"
         )
+        
+    except Exception as e:
+        await message.reply_text(f"❌ Xatolik: {str(e)}")
+
+# ==================== A'ZOLAR RO'YXATI (ID BILAN) ====================
+@app.on_message(filters.command("members"))
+async def get_members(client, message):
+    """Kanal a'zolarini ID bilan ko'rsatish"""
+    user_id = message.from_user.id
+    
+    if not is_owner(user_id):
+        await message.reply_text("❌ Sizga ruxsat yo'q!")
+        return
+    
+    if user_id not in selected_channel:
+        await message.reply_text("❌ Avval /select ni bosing!")
+        return
+    
+    chat_id = selected_channel[user_id]["chat_id"]
+    channel_title = selected_channel[user_id]["title"]
+    
+    await message.reply_text(f"⏳ A'zolar yuklanmoqda...")
+    
+    try:
+        members_with_username = []
+        members_without_username = []
+        admins = []
+        owner = None
+        
+        async for member in client.get_chat_members(chat_id):
+            user = member.user
+            
+            # Statusni aniqlash
+            if member.status == enums.ChatMemberStatus.OWNER:
+                owner = user
+            elif member.status == enums.ChatMemberStatus.ADMINISTRATOR:
+                admins.append(user)
+            
+            user_info = {
+                "id": user.id,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "username": user.username
+            }
+            
+            if user.username:
+                members_with_username.append(user_info)
+            else:
+                members_without_username.append(user_info)
+        
+        # Natijalarni ko'rsatish
+        text = f"📋 **KANAL A'ZOLARI**\n📌 **{channel_title}**\n\n"
+        
+        if owner:
+            name = f"{owner.first_name or ''} {owner.last_name or ''}".strip()
+            text += f"👑 **EGASI:**\n"
+            text += f"   • {name}\n"
+            text += f"   • ID: `{owner.id}`\n"
+            if owner.username:
+                text += f"   • @{owner.username}\n"
+            text += "\n"
+        
+        if admins:
+            text += f"🔰 **ADMINLAR ({len(admins)}):**\n"
+            for i, admin in enumerate(admins[:5]):
+                name = f"{admin.first_name or ''} {admin.last_name or ''}".strip()
+                text += f"  {i+1}. {name}\n"
+                text += f"     ID: `{admin.id}`\n"
+                if admin.username:
+                    text += f"     @{admin.username}\n"
+            if len(admins) > 5:
+                text += f"  ... va yana {len(admins)-5} ta admin\n"
+            text += "\n"
+        
+        text += f"**📱 USERNAME BORLAR ({len(members_with_username)}):**\n"
+        for i, user in enumerate(members_with_username[:20]):
+            name = f"{user['first_name']} {user['last_name']}".strip()
+            text += f"{i+1}. @{user['username']}\n"
+            text += f"   ID: `{user['id']}`\n"
+            text += f"   {name}\n\n"
+        
+        if len(members_with_username) > 20:
+            text += f"... va yana {len(members_with_username)-20} ta\n\n"
+        
+        text += f"**❌ USERNAME YO'QLAR ({len(members_without_username)}):**\n"
+        for i, user in enumerate(members_without_username[:20]):
+            name = f"{user['first_name']} {user['last_name']}".strip()
+            text += f"{i+1}. {name}\n"
+            text += f"   ID: `{user['id']}`\n\n"
+        
+        if len(members_without_username) > 20:
+            text += f"... va yana {len(members_without_username)-20} ta\n\n"
+        
+        text += f"\n📊 **JAMI: {len(members_with_username) + len(members_without_username)} ta a'zo**\n"
+        text += f"   • Username bor: {len(members_with_username)}\n"
+        text += f"   • Username yo'q: {len(members_without_username)}\n"
+        
+        if members_without_username:
+            text += f"\n💡 **Username yo'qni bloklash uchun:**\n"
+            text += f"   /setbanid {members_without_username[0]['id']} 30k"
+        
+        await message.reply_text(text)
         
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
@@ -334,23 +447,27 @@ async def list_bans(client, message):
     except:
         channel_title = "Kanal"
 
-    text = f"📋 **BLOKLASHLAR**\n📌 **{channel_title}**\n\n"
+    text = f"📋 **REJALASHTIRILGAN BLOKLASHLAR**\n📌 **{channel_title}**\n\n"
     now = datetime.now()
     
     for data in scheduled[chat_id].values():
-        toshkent_vaqt = toshkent_vaqti(data["time"])
+        toshkent_vaqt = data["time"] + timedelta(hours=5)
         sana = toshkent_vaqt.strftime("%d.%m.%Y %H:%M")
         
         qolgan = data["time"] - now
-        if qolgan.days > 0:
-            qolgan_text = f"(qoldi: {qolgan.days} kun)"
+        if qolgan.total_seconds() > 0:
+            if qolgan.days > 0:
+                qolgan_text = f"(qoldi: {qolgan.days} kun)"
+            else:
+                qolgan_text = f"(qoldi: {qolgan.seconds//3600} soat)"
         else:
-            qolgan_text = f"(qoldi: {qolgan.seconds//3600} soat)"
+            qolgan_text = "(kutilmoqda)"
         
         display_name = f"@{data['username']}" if data['username'] and not str(data['username']).startswith('ID:') else data['username']
         text += f"• {display_name} - {sana} {qolgan_text}\n"
     
-    text += f"\n📊 Jami: {len(scheduled[chat_id])} ta"
+    text += f"\n📊 Jami: {len(scheduled[chat_id])} ta bloklash\n"
+    text += f"⚠️ **Barchasi vaqt kelganda ABADIY bloklanadi!**"
     await message.reply_text(text)
 
 # ==================== BEKOR QILISH ====================
@@ -386,7 +503,7 @@ async def cancel_ban(client, message):
     except:
         await message.reply_text(f"❌ Xatolik")
 
-# ==================== VAQTLI BLOKLASH ====================
+# ==================== VAQTLI BLOKLASH TEKSHIRUVI ====================
 def check_bans_background():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -400,13 +517,30 @@ def check_bans_background():
                         if now >= scheduled[chat_id][user_id]["time"]:
                             try:
                                 data = scheduled[chat_id][user_id]
-                                await app.ban_chat_member(chat_id, user_id)
-                                print(f"✅ Bloklandi: {data['username']}")
+                                print(f"⏰ Abadiy bloklash vaqti keldi: {data['username']}")
+                                
+                                # ABADIY BLOKLASH (366 kun = 527040 minut)
+                                until_date = now + timedelta(days=366)
+                                await app.ban_chat_member(chat_id, user_id, until_date=until_date)
+                                
+                                print(f"✅ ABADIY bloklandi: {data['username']}")
+                                
+                                # Kanalga xabar
+                                try:
+                                    await app.send_message(
+                                        chat_id,
+                                        f"🚫 **{data['username']} ABADIY bloklandi!**\n"
+                                        f"📅 Vaqt: {now.strftime('%d.%m.%Y %H:%M')}"
+                                    )
+                                except:
+                                    pass
+                                
                                 del scheduled[chat_id][user_id]
+                                
                             except Exception as e:
-                                print(f"Xato: {e}")
-            except:
-                pass
+                                print(f"❌ Bloklash xatosi: {e}")
+            except Exception as e:
+                print(f"Tekshirish xatosi: {e}")
             await asyncio.sleep(60)
     
     loop.run_until_complete(check())
@@ -415,18 +549,23 @@ def check_bans_background():
 thread = threading.Thread(target=check_bans_background, daemon=True)
 thread.start()
 
-print("=" * 50)
-print("✅ BOT ISHGA TUSHDI!")
-print("=" * 50)
+print("=" * 60)
+print("✅ ABADIY BLOKLASH BOTI ISHGA TUSHDI!")
+print("=" * 60)
 print(f"🤖 Bot: @uzdramadubbot")
 print(f"👤 Egasi: @maestro_o")
 print(f"📌 Kanal ID: {YOUR_CHANNEL_ID}")
-print("=" * 50)
-print("📋 KOMANDALAR:")
-print("   /select - Kanalni tanlash")
-print("   /members - A'zolar ro'yxati")
-print("   /setbanid ID 30kun - Bloklash")
-print("   /list - Bloklashlar")
-print("=" * 50)
+print("=" * 60)
+print("📋 QISQA KOMANDALAR:")
+print("   • /setban @user 5m  - 5 minutdan keyin abadiy")
+print("   • /setban @user 10k - 10 kundan keyin abadiy")
+print("   • /setban @user 20k - 20 kundan keyin abadiy")
+print("   • /setban @user 30k - 30 kundan keyin abadiy")
+print("   • /setban @user 40k - 40 kundan keyin abadiy")
+print("=" * 60)
+print("📌 ID ORQALI: /setbanid 123456789 30k")
+print("📌 A'ZOLAR: /members")
+print("📌 RO'YXAT: /list")
+print("=" * 60)
 
 app.run()
