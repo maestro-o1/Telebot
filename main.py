@@ -9,7 +9,7 @@ from pyrogram.types import Message
 # BOT SOZLAMALARI
 API_ID = 35058290
 API_HASH = "d7cb549b10b8965c99673f8bd36c130a"
-BOT_TOKEN = "8660286208:AAGQlKj9yni5HNoWCeGW7x_1V6vdWFiTdlc"
+BOT_TOKEN = "8660286208:AAHssllobxtng0RDXfZ70fEkfFbjx13FyQE"
 
 # Logging
 logging.basicConfig(level=logging.INFO)
