@@ -5,7 +5,7 @@ import asyncio
 import json
 import os
 
-# SOZLAMALAR
+# ==================== SOZLAMALAR ====================
 API_ID = 35058290
 API_HASH = "d7cb549b10b8965c99673f8bd36c130a"
 BOT_TOKEN = "8660286208:AAHssllobxtng0RDXfZ70fEkfFbjx13FyQE"
@@ -16,13 +16,14 @@ app = Client("kanal_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 # Ma'lumotlar ombori
 scheduled = {}
 user_history = {}
-bot_channel = None  # Global o'zgaruvchi
-setup_done = {}
+bot_channel = None
+setup_done = False
 
 # ==================== MA'LUMOTLARNI SAQLASH ====================
 DATA_FILE = "bot_data.json"
 
 def save_data():
+    global bot_channel
     try:
         data = {
             "scheduled": {},
@@ -52,16 +53,15 @@ def save_data():
         with open(DATA_FILE, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        print(f"Save error: {e}")
+        print(f"Saqlash xatosi: {e}")
 
 def load_data():
+    global bot_channel
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r") as f:
                 data = json.load(f)
             
-            # Bot kanalni yuklash
-            global bot_channel
             bot_channel = data.get("bot_channel", None)
             
             for chat_id, users in data.get("scheduled", {}).items():
@@ -82,7 +82,7 @@ def load_data():
                     "status": hist_data.get("status", "")
                 }
     except Exception as e:
-        print(f"Load error: {e}")
+        print(f"Yuklash xatosi: {e}")
 
 load_data()
 
@@ -123,22 +123,32 @@ async def check_channel_admin(client, chat_id):
     except:
         return False
 
+# ==================== ASOSIY MENYU ====================
+def get_main_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 A'ZOLAR", callback_data="menu_members")],
+        [InlineKeyboardButton("🚫 BLOKLASH", callback_data="menu_ban")],
+        [InlineKeyboardButton("📊 BLOKLASHLAR", callback_data="menu_list")],
+        [InlineKeyboardButton("❌ BEKOR QILISH", callback_data="menu_cancel")],
+        [InlineKeyboardButton("📜 TARIX", callback_data="menu_history")],
+        [InlineKeyboardButton("🔄 KANALNI YANGILASH", callback_data="menu_reload")]
+    ])
+
 # ==================== START KOMANDASI ====================
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
+    global setup_done
+    
     if not is_owner(message.from_user.id):
         await message.reply_text("❌ Sizga ruxsat yo'q!")
         return
     
-    user_id = message.from_user.id
-    
-    # Agar bot kanalga ulangan bo'lsa
-    if bot_channel is not None:
+    # Agar kanal ulangan bo'lsa
+    if bot_channel:
         try:
-            # Kanal adminligini tekshirish
             is_admin = await check_channel_admin(client, bot_channel)
             if is_admin:
-                setup_done[user_id] = True
+                setup_done = True
                 await message.reply_text(
                     f"✅ **ASOSIY MENYU**\n\n"
                     f"📌 Kanal ID: `{bot_channel}`\n\n"
@@ -149,7 +159,7 @@ async def start_command(client, message):
         except:
             pass
     
-    # Kanal so'rash
+    # Kanal ID so'rash
     await message.reply_text(
         "👋 **XUSH KELIBSIZ!**\n\n"
         "Bot ishlashi uchun avval **kanal ID** sini yuboring.\n\n"
@@ -163,28 +173,24 @@ async def start_command(client, message):
 # ==================== KANAL ID NI QABUL QILISH ====================
 @app.on_message(filters.text & filters.private)
 async def handle_channel_id(client, message):
+    global bot_channel, setup_done
+    
     if not is_owner(message.from_user.id):
         return
     
-    user_id = message.from_user.id
-    
-    # Agar sozlash bosqichida bo'lmasa
-    if setup_done.get(user_id):
+    if setup_done:
         return
     
     try:
         chat_id = int(message.text.strip())
         
-        # Kanal adminligini tekshirish
         is_admin = await check_channel_admin(client, chat_id)
         
         if is_admin:
-            global bot_channel
             bot_channel = chat_id
+            setup_done = True
             save_data()
-            setup_done[user_id] = True
             
-            # Kanal ma'lumotlarini olish
             chat = await client.get_chat(chat_id)
             
             await message.reply_text(
@@ -212,18 +218,7 @@ async def handle_channel_id(client, message):
             "Misol: `-100123456789`"
         )
 
-# ==================== ASOSIY MENYU ====================
-def get_main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 A'ZOLAR", callback_data="menu_members")],
-        [InlineKeyboardButton("🚫 BLOKLASH", callback_data="menu_ban")],
-        [InlineKeyboardButton("📊 BLOKLASHLAR", callback_data="menu_list")],
-        [InlineKeyboardButton("❌ BEKOR QILISH", callback_data="menu_cancel")],
-        [InlineKeyboardButton("📜 TARIX", callback_data="menu_history")],
-        [InlineKeyboardButton("🔄 KANALNI YANGILASH", callback_data="menu_reload")]
-    ])
-
-# ==================== TUGMALAR ====================
+# ==================== TUGMALARGA JAVOB ====================
 @app.on_callback_query()
 async def handle_callbacks(client, callback_query):
     data = callback_query.data
@@ -233,14 +228,11 @@ async def handle_callbacks(client, callback_query):
         await callback_query.answer("Ruxsat yo'q!")
         return
     
-    if bot_channel is None:
-        await callback_query.message.edit_text(
-            "❌ Kanal ulanmagan! /start ni bosing."
-        )
+    if not bot_channel:
+        await callback_query.message.edit_text("❌ Kanal ulanmagan! /start ni bosing.")
         await callback_query.answer()
         return
     
-    # Kanal adminligini tekshirish
     is_admin = await check_channel_admin(client, bot_channel)
     if not is_admin:
         await callback_query.message.edit_text(
@@ -372,7 +364,7 @@ async def members_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if bot_channel is None:
+    if not bot_channel:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -429,7 +421,7 @@ async def setban_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if bot_channel is None:
+    if not bot_channel:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -467,7 +459,7 @@ async def setbanid_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if bot_channel is None:
+    if not bot_channel:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -505,7 +497,7 @@ async def list_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if bot_channel is None:
+    if not bot_channel:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -524,7 +516,7 @@ async def cancel_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
     
-    if bot_channel is None:
+    if not bot_channel:
         await message.reply_text("❌ Avval kanal ulang! /start ni bosing.")
         return
     
@@ -558,11 +550,11 @@ async def history_cmd(client, message):
     
     await message.reply_text(f"📜 Tarix: {len(user_history)} ta foydalanuvchi")
 
-# ==================== YANGI A'ZO ====================
+# ==================== YANGI A'ZO QO'SHILGANDA ====================
 @app.on_chat_member_updated()
 async def on_chat_member_update(client, chat_member_updated):
     try:
-        if bot_channel is None:
+        if not bot_channel:
             return
         
         if chat_member_updated.chat.id != bot_channel:
@@ -599,7 +591,7 @@ async def on_chat_member_update(client, chat_member_updated):
         
         await client.send_message(
             YOUR_ID,
-            f"👤 **YANGI A'ZO!**\n\n"
+            f"👤 **YANGI A'ZO QO'SHILDI!**\n\n"
             f"🆔 ID: `{user_id}`\n"
             f"📱 Username: {user_history[user_id]['username']}\n"
             f"👤 Ism: {full_name}\n"
@@ -608,7 +600,7 @@ async def on_chat_member_update(client, chat_member_updated):
             reply_markup=ban_keyboard
         )
     except Exception as e:
-        print(f"YangI a'zo xatosi: {e}")
+        print(f"Yangi a'zo xatosi: {e}")
 
 # ==================== TEZKOR BLOKLASH ====================
 @app.on_callback_query(filters.regex(r"^quick_"))
@@ -671,10 +663,10 @@ async def check_bans():
                             
                             await app.send_message(
                                 YOUR_ID,
-                                f"🚫 **BLOKLANDI!**\n\n"
+                                f"🚫 **FOYDALANUVCHI BLOKLANDI!**\n\n"
                                 f"👤 {scheduled[chat_id][user_id]['full_name']}\n"
                                 f"🆔 ID: `{user_id}`\n"
-                                f"📅 {now.strftime('%d.%m.%Y %H:%M')}"
+                                f"📅 Vaqt: {now.strftime('%d.%m.%Y %H:%M')}"
                             )
                             
                             del scheduled[chat_id][user_id]
@@ -685,23 +677,16 @@ async def check_bans():
             print(f"Tekshirish xatosi: {e}")
         await asyncio.sleep(60)
 
-# ==================== AVTOMATIK SAQLASH ====================
-async def auto_save():
-    while True:
-        await asyncio.sleep(3600)
-        save_data()
-
 # ==================== BOTNI ISHGA TUSHIRISH ====================
 async def main():
     print("=" * 50)
     print("✅ KANAL BOSHQARUV BOTI ISHGA TUSHDI!")
     print("=" * 50)
     print(f"🤖 Bot: @uzdramadubbot")
-    print(f"👤 Egasi: @maestro_o")
+    print(f"👤 Egasi: @maestro_o (ID: {YOUR_ID})")
     print("=" * 50)
     
     asyncio.create_task(check_bans())
-    asyncio.create_task(auto_save())
     await app.run()
 
 if __name__ == "__main__":
