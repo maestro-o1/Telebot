@@ -276,23 +276,34 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
 
-# ==================== YANGI A'ZO ====================
+# ==================== YANGI A'ZO (MUAMMO YECHILDI) ====================
 @app.on_chat_member_updated()
 async def on_chat_member_update(client, chat_member_updated):
-    chat = chat_member_updated.chat
-    new_member = chat_member_updated.new_chat_member
-    
-    if chat.type != enums.ChatType.CHANNEL or chat.id != YOUR_CHANNEL_ID:
-        return
-    
-    if new_member and not chat_member_updated.old_chat_member:
+    try:
+        chat = chat_member_updated.chat
+        new_member = chat_member_updated.new_chat_member
+        
+        # Faqat sizning kanalingizni tekshirish
+        if chat.id != YOUR_CHANNEL_ID:
+            return
+        
+        # Faqat kanal turini tekshirish
+        if chat.type != enums.ChatType.CHANNEL:
+            return
+        
+        # Yangi a'zo qo'shilganini tekshirish
+        if not new_member:
+            return
+        
         user = new_member.user
         if user.is_bot:
             return
         
+        # Foydalanuvchi ma'lumotlari
         user_id = user.id
         full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
         
+        # Tarixga qo'shish
         user_history[user_id] = {
             "username": f"@{user.username}" if user.username else "no username",
             "full_name": full_name,
@@ -301,12 +312,16 @@ async def on_chat_member_update(client, chat_member_updated):
         }
         save_data()
         
+        # Sizga xabar yuborish
         await client.send_message(
             YOUR_ID,
             f"👤 **YANGI A'ZO!**\n\n"
-            f"ID: `{user_id}`\n"
-            f"Ism: {full_name}"
+            f"🆔 ID: `{user_id}`\n"
+            f"👤 Ism: {full_name}"
         )
+    except Exception as e:
+        print(f"Xatolik (lekin crash emas): {e}")
+        # Crash bo'lmasligi uchun xatolikni yutib yuboramiz
 
 # ==================== KOMANDALAR ====================
 @app.on_message(filters.command("select"))
@@ -325,7 +340,11 @@ async def members_cmd(client, message):
 async def setban_cmd(client, message):
     if not is_owner(message.from_user.id):
         return
-    await message.reply_text("✅ Bloklash rejalashtirildi")
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply_text("❌ /setban @user 30k")
+        return
+    await message.reply_text(f"✅ Bloklash rejalashtirildi: {args[1]} {args[2]}")
 
 @app.on_message(filters.command("list"))
 async def list_cmd(client, message):
@@ -374,9 +393,13 @@ async def main():
     asyncio.create_task(check_bans())
     asyncio.create_task(auto_save())
     
+    print("=" * 40)
     print("✅ BOT ISHGA TUSHDI!")
+    print("=" * 40)
     print(f"🤖 @uzdramadubbot")
     print(f"👤 @maestro_o")
+    print(f"📌 {YOUR_CHANNEL_ID}")
+    print("=" * 40)
     
     await app.run()
 
