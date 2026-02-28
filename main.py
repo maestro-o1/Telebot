@@ -81,7 +81,7 @@ async def start_command(client, message):
     else:
         await message.reply_text("❌ Sizga ruxsat yo'q!")
 
-# ==================== KANALNI TANLASH ====================
+# ==================== KANALNI TANLASH (TO'G'RILANGAN) ====================
 @app.on_message(filters.command("select"))
 async def select_channel(client, message):
     """Kanalni tanlash"""
@@ -91,7 +91,6 @@ async def select_channel(client, message):
         await message.reply_text("❌ Sizga ruxsat yo'q!")
         return
     
-    # To'g'ridan-to'g'ri kanal ID sini ishlatish
     chat_id = YOUR_CHANNEL_ID
     
     await message.reply_text("⏳ Tekshirilmoqda...")
@@ -100,46 +99,69 @@ async def select_channel(client, message):
         # Kanal ma'lumotlarini olish
         chat = await client.get_chat(chat_id)
         
-        # Bot adminligini tekshirish
-        try:
-            bot_member = await client.get_chat_member(chat_id, "me")
+        # MUHIM: Cache'ni tozalash uchun bir necha marta tekshirish
+        is_admin = False
+        admin_status = None
+        
+        # 1-usul: get_chat_member bilan tekshirish (3 marta)
+        for i in range(3):
+            try:
+                bot_member = await client.get_chat_member(chat_id, "me")
+                print(f"Tekshirish {i+1}: {bot_member.status}")
+                if bot_member.status in ["administrator", "creator"]:
+                    is_admin = True
+                    admin_status = bot_member.status
+                    break
+                await asyncio.sleep(2)  # 2 soniya kutish
+            except Exception as e:
+                print(f"Xatolik {i+1}: {e}")
+        
+        # 2-usul: Agar topilmasa, adminlar ro'yxatidan qidirish
+        if not is_admin:
+            async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
+                if member.user.is_self:
+                    is_admin = True
+                    admin_status = member.status
+                    print(f"Adminlar ro'yxatidan topildi: {member.status}")
+                    break
+        
+        if not is_admin:
+            # Adminlar ro'yxatini ko'rsatish
+            admins_text = "👥 **KANAL ADMINLARI:**\n"
+            admin_count = 0
             
-            if bot_member.status not in ["administrator", "creator"]:
-                # Adminlar ro'yxatini olish
-                admins_text = "👥 **KANAL ADMINLARI:**\n"
-                admin_count = 0
-                
-                async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
-                    admin_count += 1
-                    user = member.user
-                    if user.is_self:
-                        admins_text += f"✅ **BOT** - @{user.username} (Status: {member.status})\n"
-                    else:
-                        name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-                        admins_text += f"• {name} - @{user.username if user.username else 'username yo\'q'}\n"
-                
-                await message.reply_text(
-                    f"❌ **BOT ADMIN EMAS!**\n\n"
-                    f"Kanal: {chat.title}\n"
-                    f"ID: `{chat_id}`\n\n"
-                    f"📊 **ADMINLAR RO'YXATI ({admin_count}):**\n"
-                    f"{admins_text}\n\n"
-                    f"📌 **YECHIM:**\n"
-                    f"1. Yuqoridagi ro'yxatda @uzdramadubbot bormi?\n"
-                    f"2. Agar yo'q bo'lsa, botni admin qiling\n"
-                    f"3. Agar bor bo'lsa, 'Foydalanuvchilarni bloklash' huquqini bering\n"
-                    f"4. 30 soniya kuting\n"
-                    f"5. /select ni qayta bosing"
-                )
-                return
-        except Exception as e:
-            await message.reply_text(f"❌ Admin tekshirishda xatolik: {str(e)}")
+            async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
+                admin_count += 1
+                user = member.user
+                status_text = "✅" if user.is_self else "•"
+                name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+                admins_text += f"{status_text} @{user.username if user.username else 'no username'} - {member.status}\n"
+            
+            await message.reply_text(
+                f"❌ **BOT ADMIN EMAS!**\n\n"
+                f"Kanal: {chat.title}\n"
+                f"ID: `{chat_id}`\n\n"
+                f"{admins_text}\n\n"
+                f"📌 **YECHIM:**\n"
+                f"1. Bot adminlar ro'yxatida bormi? Yuqoriga qarang\n"
+                f"2. Agar 'ChatMemberStatus.ADMINISTRATOR' deb yozilgan bo'lsa,\n"
+                f"   bu xato - Telegram cache muammosi\n"
+                f"3. 1-2 daqiqa kuting va /select ni qayta bosing"
+            )
             return
         
-        # Tanlangan kanalni saqlash
+        # Agar shu yerga kelsa, bot admin ekan
         selected_channel[user_id] = {
             "chat_id": chat.id,
             "title": chat.title
+        }
+        
+        # Kanalni bot_channels ga qo'shish
+        bot_channels[chat.id] = {
+            "title": chat.title,
+            "username": chat.username,
+            "id": chat.id,
+            "last_seen": datetime.now()
         }
         
         members_count = chat.members_count if hasattr(chat, 'members_count') else "noma'lum"
@@ -148,7 +170,8 @@ async def select_channel(client, message):
             f"✅ **KANAL TANLANDI!**\n\n"
             f"📌 **Nomi:** {chat.title}\n"
             f"🆔 **ID:** `{chat.id}`\n"
-            f"👥 **A'zolar:** {members_count}\n\n"
+            f"👥 **A'zolar:** {members_count}\n"
+            f"🤖 **Bot status:** {admin_status}\n\n"
             f"📋 **Endi quyidagilarni qilishingiz mumkin:**\n"
             f"🔹 /members - A'zolar ro'yxati\n"
             f"🔹 /setbanid [user_id] 30kun - Bloklash\n"
@@ -241,9 +264,7 @@ async def set_ban_by_id(client, message):
         
         # Kanal ID ni aniqlash
         chat_id = YOUR_CHANNEL_ID
-        if len(args) >= 4:
-            chat_id = int(args[3])
-        elif user_id in selected_channel:
+        if user_id in selected_channel:
             chat_id = selected_channel[user_id]["chat_id"]
         
         # Kanalni tekshirish
@@ -386,10 +407,11 @@ def check_bans_background():
                                 print(f"Xato: {e}")
             except:
                 pass
-            time.sleep(60)
+            await asyncio.sleep(60)
     
     loop.run_until_complete(check())
 
+# Threadda ishga tushirish
 thread = threading.Thread(target=check_bans_background, daemon=True)
 thread.start()
 
