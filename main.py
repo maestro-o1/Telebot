@@ -122,6 +122,34 @@ def get_main_menu():
         [InlineKeyboardButton("📜 TARIX", callback_data="menu_history")]
     ])
 
+# ==================== KANAL XABARLARINI USHLASH (FAQAT MENTION) ====================
+@app.on_message(filters.channel & filters.text)
+async def channel_message_handler(client, message):
+    """Kanalda faqat @uzdramadubbot deb yozilsa javob beradi"""
+    try:
+        # Faqat sizning kanalingizni tekshirish
+        if message.chat.id != YOUR_CHANNEL_ID:
+            return
+        
+        # Bot mention qilinganligini tekshirish
+        if message.text and "@uzdramadubbot" in message.text.lower():
+            # Kanal ma'lumotlarini olish
+            chat = message.chat
+            
+            # Javob yozish
+            await message.reply_text(
+                f"✅ **KANAL QABUL QILINDI!**\n\n"
+                f"📌 **{chat.title}**\n"
+                f"🆔 ID: `{chat.id}`\n\n"
+                f"Endi botda /start yozib menyuni oching!"
+            )
+            
+            # Kanalni eslab qolish
+            if chat.id not in selected_channel.values():
+                print(f"✅ Kanal aniqlandi: {chat.title}")
+    except Exception as e:
+        print(f"Kanal xabarida xatolik: {e}")
+
 # ==================== START ====================
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
@@ -268,6 +296,129 @@ async def handle_callbacks(client, callback_query):
         )
         await callback_query.answer()
 
+# ==================== MEMBERS KOMANDASI ====================
+@app.on_message(filters.command("members"))
+async def members_cmd(client, message):
+    if not is_owner(message.from_user.id):
+        return
+    
+    user_id = message.from_user.id
+    
+    if user_id not in selected_channel:
+        await message.reply_text("❌ Avval kanal tanlang!")
+        return
+    
+    chat_id = selected_channel[user_id]["chat_id"]
+    channel_title = selected_channel[user_id]["title"]
+    
+    msg = await message.reply_text("👥 A'zolar yuklanmoqda...")
+    
+    try:
+        members_with_username = []
+        members_without_username = []
+        admins = []
+        owner = None
+        
+        async for member in client.get_chat_members(chat_id):
+            user = member.user
+            
+            if member.status == enums.ChatMemberStatus.OWNER:
+                owner = user
+            elif member.status == enums.ChatMemberStatus.ADMINISTRATOR:
+                admins.append(user)
+            
+            user_info = {
+                "id": user.id,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "username": user.username
+            }
+            
+            if user.username:
+                members_with_username.append(user_info)
+            else:
+                members_without_username.append(user_info)
+        
+        text = f"📋 **KANAL A'ZOLARI**\n📌 **{channel_title}**\n\n"
+        
+        if owner:
+            name = f"{owner.first_name or ''} {owner.last_name or ''}".strip()
+            text += f"👑 **EGASI:** {name} (ID: `{owner.id}`)\n\n"
+        
+        if admins:
+            text += f"🔰 **ADMINLAR ({len(admins)}):**\n"
+            for admin in admins[:5]:
+                name = f"{admin.first_name or ''} {admin.last_name or ''}".strip()
+                text += f"   • {name} - ID: `{admin.id}`\n"
+            text += "\n"
+        
+        text += f"**📱 USERNAME BORLAR ({len(members_with_username)}):**\n"
+        for user in members_with_username[:10]:
+            name = f"{user['first_name']} {user['last_name']}".strip()
+            text += f"   • @{user['username']} - ID: `{user['id']}`\n"
+        
+        if len(members_with_username) > 10:
+            text += f"   ... va yana {len(members_with_username)-10} ta\n"
+        
+        text += f"\n**❌ USERNAME YO'QLAR ({len(members_without_username)}):**\n"
+        for user in members_without_username[:10]:
+            name = f"{user['first_name']} {user['last_name']}".strip()
+            text += f"   • {name} - ID: `{user['id']}`\n"
+        
+        if len(members_without_username) > 10:
+            text += f"   ... va yana {len(members_without_username)-10} ta\n"
+        
+        text += f"\n📊 **JAMI: {len(members_with_username) + len(members_without_username)} ta a'zo**"
+        
+        await msg.edit_text(text)
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Xatolik: {str(e)}")
+
+# ==================== QOLGAN KOMANDALAR ====================
+@app.on_message(filters.command("select"))
+async def select_cmd(client, message):
+    if not is_owner(message.from_user.id):
+        return
+    await message.reply_text("✅ Kanal tanlandi!")
+
+@app.on_message(filters.command("setban"))
+async def setban_cmd(client, message):
+    if not is_owner(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply_text("❌ /setban @user 30k")
+        return
+    await message.reply_text(f"✅ Bloklash rejalashtirildi: {args[1]} {args[2]}")
+
+@app.on_message(filters.command("list"))
+async def list_cmd(client, message):
+    if not is_owner(message.from_user.id):
+        return
+    
+    if YOUR_CHANNEL_ID not in scheduled or not scheduled[YOUR_CHANNEL_ID]:
+        await message.reply_text("📭 Bloklashlar yo'q")
+        return
+    
+    text = "📊 **BLOKLASHLAR:**\n\n"
+    for data in scheduled[YOUR_CHANNEL_ID].values():
+        sana = toshkent_vaqti(data["time"]).strftime("%d.%m %H:%M")
+        text += f"• {data['full_name']} - {sana}\n"
+    await message.reply_text(text)
+
+@app.on_message(filters.command("cancelban"))
+async def cancel_cmd(client, message):
+    if not is_owner(message.from_user.id):
+        return
+    await message.reply_text("✅ Bekor qilindi")
+
+@app.on_message(filters.command("history"))
+async def history_cmd(client, message):
+    if not is_owner(message.from_user.id):
+        return
+    await message.reply_text(f"📜 Tarix: {len(user_history)} ta foydalanuvchi")
+
 # ==================== YANGI A'ZO ====================
 @app.on_chat_member_updated()
 async def on_chat_member_update(client, chat_member_updated):
@@ -305,47 +456,6 @@ async def on_chat_member_update(client, chat_member_updated):
     except Exception as e:
         print(f"Xatolik: {e}")
 
-# ==================== KOMANDALAR ====================
-@app.on_message(filters.command("select"))
-async def select_cmd(client, message):
-    if not is_owner(message.from_user.id):
-        return
-    await message.reply_text("✅ Kanal tanlandi!")
-
-@app.on_message(filters.command("members"))
-async def members_cmd(client, message):
-    if not is_owner(message.from_user.id):
-        return
-    await message.reply_text("👥 A'zolar yuklanmoqda...")
-
-@app.on_message(filters.command("setban"))
-async def setban_cmd(client, message):
-    if not is_owner(message.from_user.id):
-        return
-    args = message.text.split()
-    if len(args) < 3:
-        await message.reply_text("❌ /setban @user 30k")
-        return
-    await message.reply_text(f"✅ Bloklash rejalashtirildi: {args[1]} {args[2]}")
-
-@app.on_message(filters.command("list"))
-async def list_cmd(client, message):
-    if not is_owner(message.from_user.id):
-        return
-    await message.reply_text("📊 Bloklashlar ro'yxati")
-
-@app.on_message(filters.command("cancelban"))
-async def cancel_cmd(client, message):
-    if not is_owner(message.from_user.id):
-        return
-    await message.reply_text("✅ Bekor qilindi")
-
-@app.on_message(filters.command("history"))
-async def history_cmd(client, message):
-    if not is_owner(message.from_user.id):
-        return
-    await message.reply_text(f"📜 Tarix: {len(user_history)} ta")
-
 # ==================== BLOKLASH TEKSHIRUVI ====================
 async def check_bans():
     while True:
@@ -376,5 +486,11 @@ print(f"🤖 @uzdramadubbot")
 print(f"👤 @maestro_o")
 print(f"📌 {YOUR_CHANNEL_ID}")
 print("=" * 40)
+
+# Asosiy tekshiruv funksiyalarini ishga tushirish
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.create_task(check_bans())
+loop.create_task(auto_save())
 
 app.run()
