@@ -1,12 +1,10 @@
+import nest_asyncio
+nest_asyncio.apply()
 import asyncio
 import logging
 from datetime import datetime, timedelta
 from pyrogram import Client, filters
 from pyrogram.types import Message
-import nest_asyncio
-
-# Nest asyncio ni qo'llash
-nest_asyncio.apply()
 
 # BOT SOZLAMALARI
 API_ID = 35058290
@@ -17,28 +15,20 @@ BOT_TOKEN = "8660286208:AAGQlKj9yni5HNoWCeGW7x_1V6vdWFiTdlc"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Botni yaratish
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# Rejalashtirilgan bloklashlar
 scheduled_bans = {}
 
 def parse_time(time_str: str) -> int:
-    """Vaqtni minutlarga o'tkazish"""
     try:
         time_str = time_str.lower()
         if 'oy' in time_str:
-            son = int(''.join(filter(str.isdigit, time_str)))
-            return son * 30 * 24 * 60
+            return int(''.join(filter(str.isdigit, time_str))) * 30 * 24 * 60
         elif 'kun' in time_str:
-            son = int(''.join(filter(str.isdigit, time_str)))
-            return son * 24 * 60
+            return int(''.join(filter(str.isdigit, time_str))) * 24 * 60
         elif 'soat' in time_str:
-            son = int(''.join(filter(str.isdigit, time_str)))
-            return son * 60
+            return int(''.join(filter(str.isdigit, time_str))) * 60
         elif 'minut' in time_str:
-            son = int(''.join(filter(str.isdigit, time_str)))
-            return son
+            return int(''.join(filter(str.isdigit, time_str)))
         else:
             return int(time_str)
     except:
@@ -47,12 +37,10 @@ def parse_time(time_str: str) -> int:
 @app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
     await message.reply_text(
-        "👋 **Vaqtli bloklash boti**\n\n"
+        "👋 **Vaqtli bloklash boti ishga tushdi!**\n\n"
         "📝 **Komandalar:**\n"
         "/setban @user 10kun - 10 kun\n"
-        "/setban @user 20kun - 20 kun\n"
         "/setban @user 1oy - 1 oy\n"
-        "/setban @user 2oy - 2 oy\n"
         "/list - Ro'yxat\n"
         "/cancelban @user - Bekor qilish"
     )
@@ -114,7 +102,7 @@ async def cancel_ban(client: Client, message: Message):
             del scheduled_bans[chat_id][user.id]
             await message.reply_text(f"✅ @{username} bekor qilindi")
     except:
-        await message.reply_text(f"❌ @{username} topilmadi")
+        await message.reply_text("❌ @{username} topilmadi")
 
 async def check_bans():
     while True:
@@ -134,9 +122,8 @@ async def check_bans():
         await asyncio.sleep(60)
 
 async def main():
-    print("🤖 Bot ishga tushmoqda...")
-    asyncio.create_task(check_bans())
     print("✅ Bot ishga tushdi!")
+    asyncio.create_task(check_bans())
     await app.run()
 
 if __name__ == "__main__":
