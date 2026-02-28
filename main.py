@@ -53,6 +53,15 @@ def toshkent_vaqti(vaqt):
 def is_owner(user_id):
     return user_id == YOUR_ID
 
+# ==================== ADMINLIKNI TEKSHIRISH ====================
+async def check_admin(client, chat_id):
+    try:
+        me = await client.get_me()
+        member = await client.get_chat_member(chat_id, me.id)
+        return member.status in ["administrator", "creator"]
+    except:
+        return False
+
 # ==================== ASOSIY MENYU ====================
 def get_main_menu():
     return InlineKeyboardMarkup([
@@ -73,11 +82,22 @@ async def start_command(client, message):
         return
     
     if bot_channel:
-        setup_done = True
-        await message.reply_text(
-            f"✅ **ASOSIY MENYU**\n\n📌 Kanal ID: `{bot_channel}`",
-            reply_markup=get_main_menu()
-        )
+        # Adminlikni tekshirish
+        is_admin = await check_admin(client, bot_channel)
+        if is_admin:
+            setup_done = True
+            await message.reply_text(
+                f"✅ **ASOSIY MENYU**\n\n📌 Kanal ID: `{bot_channel}`\n✅ Adminlik tasdiqlandi",
+                reply_markup=get_main_menu()
+            )
+        else:
+            await message.reply_text(
+                f"❌ **Bot kanalda admin emas!**\n\n"
+                f"Kanal ID: `{bot_channel}`\n\n"
+                f"1. Botni kanalga admin qiling\n"
+                f"2. 'Foydalanuvchilarni bloklash' huquqini bering\n"
+                f"3. /start ni qayta bosing"
+            )
     else:
         await message.reply_text(
             "👋 **XUSH KELIBSIZ!**\n\nKanal ID ni yuboring:"
@@ -93,16 +113,29 @@ async def handle_channel_id(client, message):
     
     try:
         chat_id = int(message.text.strip())
-        bot_channel = chat_id
-        setup_done = True
-        save_data()
         
-        await message.reply_text(
-            f"✅ **KANAL ULANDI!**\n📌 ID: `{chat_id}`",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📋 MENYU", callback_data="main_menu")]
-            ])
-        )
+        # Adminlikni tekshirish
+        is_admin = await check_admin(client, chat_id)
+        
+        if is_admin:
+            bot_channel = chat_id
+            setup_done = True
+            save_data()
+            
+            await message.reply_text(
+                f"✅ **KANAL MUVOFFAQIYATLI ULANDI!**\n\n📌 ID: `{chat_id}`\n✅ Adminlik tasdiqlandi",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 MENYU", callback_data="main_menu")]
+                ])
+            )
+        else:
+            await message.reply_text(
+                f"❌ **Bot kanalda admin emas!**\n\n"
+                f"ID: `{chat_id}`\n\n"
+                f"1. Botni kanalga admin qiling\n"
+                f"2. 'Foydalanuvchilarni bloklash' huquqini bering\n"
+                f"3. Qayta urinib ko'ring"
+            )
     except:
         await message.reply_text("❌ Xato! Kanal ID raqam bo'lishi kerak.")
 
@@ -115,6 +148,16 @@ async def handle_callbacks(client, callback_query):
     if user_id != YOUR_ID:
         await callback_query.answer("Ruxsat yo'q!")
         return
+    
+    # Adminlikni tekshirish
+    if bot_channel:
+        is_admin = await check_admin(client, bot_channel)
+        if not is_admin:
+            await callback_query.message.edit_text(
+                "❌ **Bot kanalda admin emas!**\n\nBotni qayta admin qiling."
+            )
+            await callback_query.answer()
+            return
     
     if data == "main_menu":
         await callback_query.message.edit_text(
@@ -184,15 +227,13 @@ async def handle_callbacks(client, callback_query):
     
     await callback_query.answer()
 
-# ==================== MEMBERS ====================
+# ==================== KOMANDALAR ====================
 @app.on_message(filters.command("members"))
 async def members_cmd(client, message):
     if message.from_user.id != YOUR_ID:
         return
-    
     await message.reply_text("👥 A'zolar ro'yxati...")
 
-# ==================== SETBAN ====================
 @app.on_message(filters.command("setban"))
 async def setban_cmd(client, message):
     if message.from_user.id != YOUR_ID:
