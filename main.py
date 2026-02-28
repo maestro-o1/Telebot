@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta
 from pyrogram import Client, filters
 
@@ -114,27 +113,38 @@ async def cancel_ban(client, message):
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
 
-async def check_bans():
-    while True:
-        try:
-            now = datetime.now()
-            for chat_id in list(scheduled.keys()):
-                for user_id in list(scheduled[chat_id].keys()):
-                    if now >= scheduled[chat_id][user_id]["time"]:
-                        try:
-                            await app.ban_chat_member(chat_id, user_id)
-                            del scheduled[chat_id][user_id]
-                            print(f"Bloklandi: {user_id}")
-                        except:
-                            pass
-        except:
-            pass
-        await asyncio.sleep(60)
+# O'ZGARTIRILGAN QISM - vaqtli bloklash tekshiruvi
+import asyncio
+import threading
 
-async def main():
-    print("✅ Bot ishga tushdi!")
-    asyncio.create_task(check_bans())
-    await app.run()
+def check_bans_background():
+    """Background thread orqali vaqtli bloklashni tekshirish"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    async def check():
+        while True:
+            try:
+                now = datetime.now()
+                for chat_id in list(scheduled.keys()):
+                    for user_id in list(scheduled[chat_id].keys()):
+                        if now >= scheduled[chat_id][user_id]["time"]:
+                            try:
+                                # Bloklash
+                                await app.ban_chat_member(chat_id, user_id)
+                                del scheduled[chat_id][user_id]
+                                print(f"✅ Bloklandi: {user_id}")
+                            except Exception as e:
+                                print(f"Bloklash xatosi: {e}")
+            except Exception as e:
+                print(f"Tekshirish xatosi: {e}")
+            await asyncio.sleep(60)
+    
+    loop.run_until_complete(check())
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# Threadda ishga tushirish
+thread = threading.Thread(target=check_bans_background, daemon=True)
+thread.start()
+
+print("✅ Bot ishga tushdi!")
+app.run()  # Bu bloklovchi emas
