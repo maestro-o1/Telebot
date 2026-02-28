@@ -531,7 +531,7 @@ async def quick_ban_handler(client, callback_query):
         
         await callback_query.message.edit_text(
             f"✅ **BLOKLASH REJALASHTIRILDI!**\n\n"
-            f"👤 {user_info.get('full_name', 'Noma'lum')}\n"
+            f"👤 {user_info.get('full_name', 'Noma\'lum')}\n"
             f"🆔 ID: `{target_id}`\n"
             f"⏰ Vaqt: {time_str}\n"
             f"📅 Sana: {toshkent_vaqti(ban_time).strftime('%d.%m.%Y %H:%M')}"
