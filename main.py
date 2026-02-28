@@ -1,13 +1,9 @@
-import asyncio
-import uvloop
 from datetime import datetime, timedelta
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import asyncio
 import json
 import os
-
-# uvloop ni ishga tushirish (MUHIM!)
-uvloop.install()
 
 # SOZLAMALAR
 API_ID = 35058290
@@ -374,20 +370,11 @@ async def auto_save():
         await asyncio.sleep(3600)
         save_data()
 
-# ==================== MAIN ====================
-async def main():
-    asyncio.create_task(check_bans())
-    asyncio.create_task(auto_save())
-    
-    print("=" * 40)
-    print("✅ BOT ISHGA TUSHDI!")
-    print("=" * 40)
-    print(f"🤖 @uzdramadubbot")
-    print(f"👤 @maestro_o")
-    print(f"📌 {YOUR_CHANNEL_ID}")
-    print("=" * 40)
-    
-    await app.run()
+# ==================== BOTNI ISHGA TUSHIRISH ====================
+print("✅ BOT ISHGA TUSHMOQDA...")
+print(f"🤖 @uzdramadubbot")
+print(f"👤 @maestro_o")
+print(f"📌 {YOUR_CHANNEL_ID}")
+print("=" * 40)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+app.run()
