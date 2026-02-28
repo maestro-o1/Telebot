@@ -10,6 +10,21 @@ BOT_TOKEN = "8660286208:AAHssllobxtng0RDXfZ70fEkfFbjx13FyQE"
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 scheduled = {}
 
+def parse_time(time_str):
+    try:
+        if 'kun' in time_str:
+            return int(time_str.replace('kun', '')) * 24 * 60
+        elif 'oy' in time_str:
+            return int(time_str.replace('oy', '')) * 30 * 24 * 60
+        else:
+            return 30
+    except:
+        return 30
+
+def toshkent_vaqti(vaqt):
+    """Server vaqtini Toshkent vaqtiga o'tkazish (+5 soat)"""
+    return vaqt + timedelta(hours=5)
+
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
     await message.reply_text(
@@ -55,8 +70,14 @@ async def set_ban(client, message):
             "time": ban_time
         }
         
-        sana = ban_time.strftime("%d.%m.%Y %H:%M")
-        await message.reply_text(f"✅ @{username} {time_str} dan keyin bloklanadi\n📅 {sana}")
+        # Toshkent vaqtida ko'rsatish
+        toshkent_vaqt = toshkent_vaqti(ban_time)
+        sana = toshkent_vaqt.strftime("%d.%m.%Y %H:%M")
+        
+        await message.reply_text(
+            f"✅ @{username} {time_str} dan keyin bloklanadi\n"
+            f"📅 Toshkent vaqti: {sana}"
+        )
         
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
@@ -67,9 +88,10 @@ async def list_bans(client, message):
         await message.reply_text("📭 Bloklashlar yo'q")
         return
         
-    text = "📋 **Bloklashlar:**\n"
+    text = "📋 **Bloklashlar (Toshkent vaqti):**\n\n"
     for data in scheduled[message.chat.id].values():
-        sana = data["time"].strftime("%d.%m %H:%M")
+        toshkent_vaqt = toshkent_vaqti(data["time"])
+        sana = toshkent_vaqt.strftime("%d.%m %H:%M")
         text += f"• @{data['username']} - {sana}\n"
     await message.reply_text(text)
 
@@ -87,9 +109,32 @@ async def cancel_ban(client, message):
         if message.chat.id in scheduled and user.id in scheduled[message.chat.id]:
             del scheduled[message.chat.id][user.id]
             await message.reply_text(f"✅ @{username} bekor qilindi")
-    except:
-        await message.reply_text("❌ Xatolik")
+        else:
+            await message.reply_text(f"❌ @{username} topilmadi")
+    except Exception as e:
+        await message.reply_text(f"❌ Xatolik: {str(e)}")
 
-# Bu qism juda muhim - SIZNING ISHLAGAN KODINGIZDAGI DEK
-print("✅ Bot ishga tushdi!")
-app.run()
+async def check_bans():
+    while True:
+        try:
+            now = datetime.now()
+            for chat_id in list(scheduled.keys()):
+                for user_id in list(scheduled[chat_id].keys()):
+                    if now >= scheduled[chat_id][user_id]["time"]:
+                        try:
+                            await app.ban_chat_member(chat_id, user_id)
+                            del scheduled[chat_id][user_id]
+                            print(f"Bloklandi: {user_id}")
+                        except:
+                            pass
+        except:
+            pass
+        await asyncio.sleep(60)
+
+async def main():
+    print("✅ Bot ishga tushdi!")
+    asyncio.create_task(check_bans())
+    await app.run()
+
+if __name__ == "__main__":
+    asyncio.run(main())
