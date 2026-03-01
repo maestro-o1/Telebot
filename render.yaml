@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: uzdrama-ban-bot
+    runtime: python
+    repo: https://github.com/sizning-username/sizning-repo
+    plan: free
+    envVars:
+      - key: API_ID
+        value: 35058290
+      - key: API_HASH
+        value: d7cb549b10b8965c99673f8bd36c130a
+      - key: BOT_TOKEN
+        value: 8660286208:AAHssllobxtng0RDXfZ70fEkfFbjx13FyQE
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    disk:
+      name: data
+      mountPath: /opt/render/project/data
+      sizeGB: 1
