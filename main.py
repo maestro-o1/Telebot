@@ -1,50 +1,113 @@
+import os
+import json
+import asyncio
+import logging
 from datetime import datetime, timedelta
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-import json
-import os
 
-# ==================== 1. SOZLAMALAR ====================
-API_ID = 35058290
-API_HASH = "d7cb549b10b8965c99673f8bd36c130a"
-BOT_TOKEN = "8660286208:AAHssllobxtng0RDXfZ70fEkfFbjx13FyQE"
-YOUR_ID = 1700341163  # @maestro_o
+# ==================== 1. SOZLAMALAR (MUHIT O'ZGARUVCHILARIDAN OLISH YAXSHI) ====================
+API_ID = int(os.environ.get("API_ID", 35058290))           # Railwayda environment variable sifatida qo'ying
+API_HASH = os.environ.get("API_HASH", "d7cb549b10b8965c99673f8bd36c130a")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8660286208:AAHssllobxtng0RDXfZ70fEkfFbjx13FyQE")
+YOUR_ID = int(os.environ.get("OWNER_ID", 1700341163))      # @maestro_o
+
+# Loglash
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Client("kanal_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ==================== 2. MA'LUMOTLAR OMBORI ====================
-scheduled = {}  # Rejalashtirilgan bloklashlar
-user_history = {}  # Foydalanuvchilar tarixi
+scheduled = {}      # {chat_id: {user_id: {"username":..., "full_name":..., "time": datetime, "user_id": int}}}
+user_history = {}   # {user_id: {"username":..., "full_name":..., "join_time": datetime, "status": str}}
 bot_channel = None  # Bot ulangan kanal ID si
-setup_done = False  # Sozlanganligi
 
-# ==================== 3. MA'LUMOTLARNI SAQLASH ====================
+# ==================== 3. MA'LUMOTLARNI SAQLASH (JSON DATETIME NI TO'G'RI SAQLASH) ====================
 DATA_FILE = "bot_data.json"
 
+def datetime_to_str(dt):
+    return dt.isoformat() if dt else None
+
+def str_to_datetime(s):
+    return datetime.fromisoformat(s) if s else None
+
 def save_data():
+    """Barcha ma'lumotlarni JSON faylga saqlash (datetime obyektlarni stringga aylantirib)"""
     try:
         data = {
-            "scheduled": {},
-            "user_history": {},
+            "scheduled": {
+                str(chat_id): {
+                    str(user_id): {
+                        "username": info["username"],
+                        "full_name": info["full_name"],
+                        "time": datetime_to_str(info["time"]),
+                        "user_id": info["user_id"]
+                    }
+                    for user_id, info in users.items()
+                }
+                for chat_id, users in scheduled.items()
+            },
+            "user_history": {
+                str(user_id): {
+                    "username": info["username"],
+                    "full_name": info["full_name"],
+                    "join_time": datetime_to_str(info["join_time"]),
+                    "status": info["status"]
+                }
+                for user_id, info in user_history.items()
+            },
             "bot_channel": bot_channel,
-            "last_save": datetime.now().isoformat()
+            "last_save": datetime_to_str(datetime.now())
         }
         with open(DATA_FILE, "w") as f:
             json.dump(data, f, indent=2)
-    except:
-        pass
+        logger.info("Ma'lumotlar saqlandi")
+    except Exception as e:
+        logger.error(f"Ma'lumotlarni saqlashda xatolik: {e}")
 
 def load_data():
-    global bot_channel
+    """JSON fayldan ma'lumotlarni yuklash (stringlarni datetime ga o'tkazib)"""
+    global bot_channel, scheduled, user_history
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r") as f:
                 data = json.load(f)
-            bot_channel = data.get("bot_channel", None)
-    except:
-        pass
+            
+            # bot_channel
+            bot_channel = data.get("bot_channel")
+            
+            # scheduled
+            loaded_scheduled = {}
+            for chat_id_str, users in data.get("scheduled", {}).items():
+                chat_id = int(chat_id_str)
+                loaded_users = {}
+                for user_id_str, info in users.items():
+                    loaded_users[int(user_id_str)] = {
+                        "username": info["username"],
+                        "full_name": info["full_name"],
+                        "time": str_to_datetime(info["time"]),
+                        "user_id": info["user_id"]
+                    }
+                loaded_scheduled[chat_id] = loaded_users
+            scheduled = loaded_scheduled
+            
+            # user_history
+            loaded_history = {}
+            for user_id_str, info in data.get("user_history", {}).items():
+                loaded_history[int(user_id_str)] = {
+                    "username": info["username"],
+                    "full_name": info["full_name"],
+                    "join_time": str_to_datetime(info["join_time"]),
+                    "status": info["status"]
+                }
+            user_history = loaded_history
+            
+            logger.info("Ma'lumotlar yuklandi")
+    except Exception as e:
+        logger.error(f"Ma'lumotlarni yuklashda xatolik: {e}")
 
-load_data()
+load_data()  # Bot ishga tushganda yuklash
 
 # ==================== 4. VAQT FUNKSIYALARI ====================
 def parse_time(time_str):
@@ -66,7 +129,7 @@ def parse_time(time_str):
             return number * 60
         else:
             return number * 24 * 60
-    except:
+    except Exception:
         return 366 * 24 * 60
 
 def toshkent_vaqti(vaqt):
@@ -75,13 +138,14 @@ def toshkent_vaqti(vaqt):
 def is_owner(user_id):
     return user_id == YOUR_ID
 
-# ==================== 5. ADMINLIKNI TEKSHIRISH ====================
+# ==================== 5. ADMINLIKNI TEKSHIRISH (XATOLARNI USHLASH) ====================
 async def check_admin(client, chat_id):
     try:
         me = await client.get_me()
         member = await client.get_chat_member(chat_id, me.id)
         return member.status in ["administrator", "creator"]
-    except:
+    except Exception as e:
+        logger.warning(f"Adminlikni tekshirishda xatolik (chat_id={chat_id}): {e}")
         return False
 
 # ==================== 6. ASOSIY MENYU ====================
@@ -97,16 +161,18 @@ def get_main_menu():
 # ==================== 7. START KOMANDASI ====================
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
-    global setup_done
-    
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         await message.reply_text("❌ Ruxsat yo'q!")
         return
     
     if bot_channel:
-        is_admin = await check_admin(client, bot_channel)
+        try:
+            is_admin = await check_admin(client, bot_channel)
+        except Exception as e:
+            await message.reply_text(f"❌ Kanalni tekshirishda xatolik: {e}")
+            return
+        
         if is_admin:
-            setup_done = True
             await message.reply_text(
                 f"✅ **ASOSIY MENYU**\n\n"
                 f"📌 Kanal ID: `{bot_channel}`",
@@ -129,9 +195,9 @@ async def start_command(client, message):
 # ==================== 8. KANAL ID NI QABUL QILISH ====================
 @app.on_message(filters.text & filters.private)
 async def handle_channel_id(client, message):
-    global bot_channel, setup_done
+    global bot_channel
     
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         return
     
     try:
@@ -142,11 +208,9 @@ async def handle_channel_id(client, message):
         
         if is_admin:
             bot_channel = chat_id
-            setup_done = True
-            save_data()
+            save_data()  # Darhol saqlash
             
             chat = await client.get_chat(chat_id)
-            
             await msg.edit_text(
                 f"✅ **KANAL MUVOFFAQIYATLI ULANDI!**\n\n"
                 f"📌 **Kanal:** {chat.title}\n"
@@ -176,7 +240,7 @@ async def handle_callbacks(client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
     
-    if user_id != YOUR_ID:
+    if not is_owner(user_id):
         await callback_query.answer("Ruxsat yo'q!")
         return
     
@@ -259,7 +323,7 @@ async def handle_callbacks(client, callback_query):
 # ==================== 10. MEMBERS KOMANDASI ====================
 @app.on_message(filters.command("members"))
 async def members_cmd(client, message):
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         return
     
     if not bot_channel:
@@ -319,7 +383,7 @@ async def members_cmd(client, message):
 # ==================== 11. BLOKLASH KOMANDALARI ====================
 @app.on_message(filters.command("setban"))
 async def setban_cmd(client, message):
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         return
     
     if not bot_channel:
@@ -357,7 +421,7 @@ async def setban_cmd(client, message):
 
 @app.on_message(filters.command("setbanid"))
 async def setbanid_cmd(client, message):
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         return
     
     if not bot_channel:
@@ -394,7 +458,7 @@ async def setbanid_cmd(client, message):
 
 @app.on_message(filters.command("list"))
 async def list_cmd(client, message):
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         return
     
     if not bot_channel:
@@ -413,7 +477,7 @@ async def list_cmd(client, message):
 
 @app.on_message(filters.command("cancelban"))
 async def cancel_cmd(client, message):
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         return
     
     if not bot_channel:
@@ -434,18 +498,22 @@ async def cancel_cmd(client, message):
                 del scheduled[bot_channel][user_id]
                 save_data()
                 await message.reply_text("✅ Bloklash bekor qilindi")
+            else:
+                await message.reply_text("❌ Bunday bloklash topilmadi")
         else:
             user = await client.get_users(identifier)
             if bot_channel in scheduled and user.id in scheduled[bot_channel]:
                 del scheduled[bot_channel][user.id]
                 save_data()
                 await message.reply_text("✅ Bloklash bekor qilindi")
+            else:
+                await message.reply_text("❌ Bunday bloklash topilmadi")
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
 
 @app.on_message(filters.command("history"))
 async def history_cmd(client, message):
-    if message.from_user.id != YOUR_ID:
+    if not is_owner(message.from_user.id):
         return
     await message.reply_text(f"📜 Tarix: {len(user_history)} ta foydalanuvchi")
 
@@ -486,16 +554,19 @@ async def on_chat_member_update(client, chat_member_updated):
              InlineKeyboardButton("❌ Skip", callback_data=f"quick_{user_id}_skip")]
         ])
         
-        await client.send_message(
-            YOUR_ID,
-            f"👤 **YANGI A'ZO QO'SHILDI!**\n\n"
-            f"🆔 ID: `{user_id}`\n"
-            f"👤 Ism: {full_name}\n"
-            f"⏰ {datetime.now().strftime('%H:%M %d.%m.%Y')}",
-            reply_markup=ban_keyboard
-        )
-    except:
-        pass
+        try:
+            await client.send_message(
+                YOUR_ID,
+                f"👤 **YANGI A'ZO QO'SHILDI!**\n\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"👤 Ism: {full_name}\n"
+                f"⏰ {datetime.now().strftime('%H:%M %d.%m.%Y')}",
+                reply_markup=ban_keyboard
+            )
+        except Exception as e:
+            logger.error(f"Egasi ga xabar jo'natishda xatolik: {e}")
+    except Exception as e:
+        logger.error(f"Chat member update handlerida xatolik: {e}")
 
 # ==================== 13. TEZKOR BLOKLASH ====================
 @app.on_callback_query(filters.regex(r"^quick_"))
@@ -503,8 +574,12 @@ async def quick_ban_handler(client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
     
-    if user_id != YOUR_ID:
+    if not is_owner(user_id):
         await callback_query.answer("Ruxsat yo'q!")
+        return
+    
+    if not bot_channel:
+        await callback_query.answer("❌ Kanal ulanmagan!", show_alert=True)
         return
     
     parts = data.split('_')
@@ -540,27 +615,28 @@ async def quick_ban_handler(client, callback_query):
     )
     await callback_query.answer()
 
-# ==================== 14. VAQTLI BLOKLASH TEKSHIRUVI ====================
+# ==================== 14. VAQTLI BLOKLASH TEKSHIRUVI (XAVFSIZ) ====================
 async def check_bans():
     while True:
         try:
             now = datetime.now()
+            # scheduled nusxasini olish (xavfsizlik uchun)
             for chat_id in list(scheduled.keys()):
                 for user_id in list(scheduled[chat_id].keys()):
-                    if now >= scheduled[chat_id][user_id]["time"]:
+                    user_data = scheduled[chat_id].get(user_id)
+                    if user_data and now >= user_data["time"]:
                         try:
                             await app.ban_chat_member(chat_id, user_id)
                             del scheduled[chat_id][user_id]
                             save_data()
-                        except:
-                            pass
-        except:
-            pass
+                            logger.info(f"Foydalanuvchi {user_id} bloklandi")
+                        except Exception as e:
+                            logger.error(f"Bloklashda xatolik {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"check_bans sikli xatosi: {e}")
         await asyncio.sleep(60)
 
 # ==================== 15. BOTNI ISHGA TUSHIRISH ====================
-import asyncio
-
 async def main():
     print("=" * 50)
     print("✅ KANAL BOSHQARUV BOTI ISHGA TUSHDI!")
