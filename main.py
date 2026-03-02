@@ -15,7 +15,6 @@ from telegram.ext import (
 import yt_dlp
 
 # ==================== SOZLAMALAR ====================
-# SIZ YUBORGAN MA'LUMOTLAR
 BOT_TOKEN = "8763594610:AAE2UV2zYNUFk3HKEEKaWOZYo_XRsvvACOQ"
 DEEPSEEK_API_KEY = "sk-37d52e756c5b43ee9d7f7042844277cb"
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -190,26 +189,19 @@ async def translate_srt_file(srt_path, target_lang="uzbek"):
         subs = pysrt.open(srt_path)
         translated_subs = []
         
-        # Foydalanuvchiga ko'rinadigan xabar (DeepSeek nomi yo'q)
-        total = len(subs)
-        
         for i, sub in enumerate(subs):
-            # Har bir subtitrni tarjima qilish
             translated_text = await translate_with_deepseek(sub.text, target_lang)
             
             if translated_text:
                 sub.text = translated_text
             else:
-                # Xatolik bo'lsa, asl matnni qoldirish
                 sub.text = f"[?] {sub.text}"
             
             translated_subs.append(sub)
             
-            # API limiti uchun kutish
             if (i + 1) % 5 == 0:
                 await asyncio.sleep(1)
         
-        # Yangi fayl yaratish
         output_path = srt_path.replace('.srt', f'_uz.srt')
         
         new_subs = pysrt.SubRipFile()
@@ -245,17 +237,15 @@ async def get_youtube_subtitles(url):
             
             available_langs = {}
             
-            # Qo'lda kiritilgan subtitrlar
             for lang, sub_data in subtitles.items():
                 if sub_data:
                     lang_name = get_language_name(lang)
                     available_langs[lang] = {'name': lang_name, 'type': 'manual'}
             
-            # Avtomatik subtitrlar
             for lang, sub_data in auto_captions.items():
                 if sub_data and lang not in available_langs:
                     lang_name = get_language_name(lang)
-                    available_langs[lang] = {'name': lang_name, 'type': 'auto'}
+                    available_langs[lang] = {'name': lang_name + ' (auto)', 'type': 'auto'}
             
             return video_title, available_langs, info
             
@@ -287,7 +277,6 @@ async def download_subtitle(url, lang_code, lang_type):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        # Yuklab olingan faylni topish
         possible_srt = temp_filename.replace('.srt', '') + f'.{lang_code}.srt'
         if not os.path.exists(possible_srt):
             possible_srt = temp_filename.replace('.srt', '') + '.srt'
@@ -301,20 +290,16 @@ async def download_subtitle(url, lang_code, lang_type):
         logger.error(f"Subtitr yuklash xatolik: {e}")
         return None
 
-# ==================== BOT HANDLERLARI ====================
-
-# /start komandasi
+# ==================== START KOMANDASI ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "noma'lum"
     
-    # Adminmi tekshirish
     if user_id == ADMIN_ID:
-        # Admin panel
         keyboard = [
-            [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_add")],
-            [InlineKeyboardButton("🗑️ Ruxsat olib tashlash", callback_data="admin_remove")],
-            [InlineKeyboardButton("📋 Ruxsatlar ro'yxati", callback_data="admin_list")]
+            [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_menu")],
+            [InlineKeyboardButton("📋 Ruxsatlarni boshqarish", callback_data="admin_manage")],
+            [InlineKeyboardButton("🎬 Botdan foydalanish", callback_data="user_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -325,11 +310,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Oddiy foydalanuvchi - ruxsatni tekshirish
     has_perm, expires = check_permission(user_id)
     
     if has_perm:
-        # Ruxsat bor - asosiy menyu
         keyboard = [
             [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
             [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")]
@@ -345,115 +328,156 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     else:
-        # Ruxsat yo'q
         await update.message.reply_text(
             f"❌ *Ruxsat yo'q*\n\n"
-            f"Botdan foydalanish uchun @maestro_o ga murojaat qiling.\n\n"
-            f"🆔 Sizning ID: `{user_id}`\n\n"
-            f"Admin sizni qo'shishi uchun shu ID ni yuboring.",
+            f"Botdan foydalanish uchun @maestro_o ga murojaat qiling.\n"
+            f"Rozi bo'lsa, ID raqamingizni yuboring. Admin sizni qo'shish uchun shu ID dan foydalanadi.\n\n"
+            f"🆔 Sizning ID: `{user_id}`",
             parse_mode='Markdown'
         )
 
-# ==================== ADMIN PANEL ====================
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==================== ADMIN MENYU ====================
+async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     user_id = update.effective_user.id
     
-    # Faqat admin uchun
     if user_id != ADMIN_ID:
-        await query.edit_message_text("❌ Bu faqat admin uchun!")
+        return
+    
+    await query.edit_message_text(
+        "👤 *Ruxsat berish*\n\n"
+        "Foydalanuvchi ID raqamini yuboring:",
+        parse_mode='Markdown'
+    )
+    context.user_data['admin_action'] = 'waiting_for_add_id'
+
+async def admin_manage_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        return
+    
+    users = get_all_users()
+    
+    if not users:
+        keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📋 *Ruxsatlar ro'yxati*\n\n"
+            "Hech kimga ruxsat berilmagan.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
+    
+    text = "📋 *Ruxsat berilgan foydalanuvchilar:*\n\n"
+    keyboard = []
+    
+    for uid, uname, expires in users:
+        days_left = (datetime.datetime.fromisoformat(expires) - datetime.datetime.now()).days
+        text += f"🆔 {uid} | @{uname} | {days_left} kun\n"
+        keyboard.append([InlineKeyboardButton(f"❌ {uid} ni bekor qilish", callback_data=f"remove_{uid}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def remove_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
         return
     
     data = query.data
+    target_id = int(data.replace("remove_", ""))
     
-    if data == "admin_add":
-        # ID so'rash
-        await query.edit_message_text(
-            "👤 *Ruxsat berish*\n\n"
-            "Foydalanuvchi ID raqamini yuboring:",
+    remove_permission(target_id)
+    
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="❌ *Ruxsatingiz bekor qilindi!*\n\n"
+                 "Admin sizning ruxsatingizni olib tashladi. "
+                 "Qayta ruxsat olish uchun @maestro_o ga murojaat qiling.",
             parse_mode='Markdown'
         )
-        context.user_data['admin_action'] = 'waiting_for_add_id'
-        return
-        
-    elif data == "admin_remove":
-        # O'chirish uchun ID so'rash
-        await query.edit_message_text(
-            "🗑️ *Ruxsatni olib tashlash*\n\n"
-            "Foydalanuvchi ID raqamini yuboring:",
-            parse_mode='Markdown'
-        )
-        context.user_data['admin_action'] = 'waiting_for_remove_id'
-        return
-        
-    elif data == "admin_list":
-        # Ruxsatlar ro'yxati
-        users = get_all_users()
-        
-        if not users:
-            await query.edit_message_text(
-                "📋 *Ruxsatlar ro'yxati*\n\n"
-                "Hech kimga ruxsat berilmagan.",
-                parse_mode='Markdown'
-            )
-            return
-        
-        text = "📋 *Ruxsat berilgan foydalanuvchilar:*\n\n"
-        for uid, uname, expires in users:
-            days_left = (datetime.datetime.fromisoformat(expires) - datetime.datetime.now()).days
-            text += f"🆔 {uid} | @{uname} | {days_left} kun\n"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_back")]]
+        user_notified = "Xabar yuborildi ✅"
+    except:
+        user_notified = "Xabar yuborilmadi ⚠️"
+    
+    users = get_all_users()
+    
+    if not users:
+        keyboard = [[InlineKeyboardButton("🔙 Admin panel", callback_data="back_to_admin")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            text,
+            f"✅ *Ruxsat bekor qilindi!*\n\n"
+            f"🆔 ID: {target_id}\n"
+            f"📨 {user_notified}\n\n"
+            f"Endi hech kimga ruxsat berilmagan.",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-        
-    elif data == "admin_back":
-        # Admin panelga qaytish
-        keyboard = [
-            [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_add")],
-            [InlineKeyboardButton("🗑️ Ruxsat olib tashlash", callback_data="admin_remove")],
-            [InlineKeyboardButton("📋 Ruxsatlar ro'yxati", callback_data="admin_list")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            "👑 *Admin panel*\n\nNima qilmoqchisiz?",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        return
+    
+    text = "📋 *Ruxsat berilgan foydalanuvchilar:*\n\n"
+    keyboard = []
+    
+    for uid, uname, expires in users:
+        days_left = (datetime.datetime.fromisoformat(expires) - datetime.datetime.now()).days
+        text += f"🆔 {uid} | @{uname} | {days_left} kun\n"
+        keyboard.append([InlineKeyboardButton(f"❌ {uid} ni bekor qilish", callback_data=f"remove_{uid}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"✅ *Ruxsat bekor qilindi!*\n\n"
+        f"🆔 ID: {target_id}\n"
+        f"📨 {user_notified}\n\n"
+        f"{text}",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
-# ==================== ADMIN XABARLARINI QAYTA ISHLASH ====================
+# ==================== ADMIN XABARLAR ====================
 async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # Faqat admin uchun
     if user_id != ADMIN_ID:
         return
     
     action = context.user_data.get('admin_action')
     
     if action == 'waiting_for_add_id':
-        # ID ni olish
         try:
             target_id = int(text.strip())
             context.user_data['target_id'] = target_id
             context.user_data['admin_action'] = 'waiting_for_days'
             
-            # Kunlar tugmalari
             keyboard = [
-                [InlineKeyboardButton("3 kun", callback_data="days_3")],
-                [InlineKeyboardButton("5 kun", callback_data="days_5")],
-                [InlineKeyboardButton("10 kun", callback_data="days_10")],
-                [InlineKeyboardButton("1 oy (30 kun)", callback_data="days_30")],
-                [InlineKeyboardButton("🔙 Bekor qilish", callback_data="admin_back")]
+                [InlineKeyboardButton("3 kun", callback_data="days_3"),
+                 InlineKeyboardButton("1 hafta", callback_data="days_7")],
+                [InlineKeyboardButton("10 kun", callback_data="days_10"),
+                 InlineKeyboardButton("20 kun", callback_data="days_20")],
+                [InlineKeyboardButton("30 kun", callback_data="days_30")],
+                [InlineKeyboardButton("🔙 Bekor qilish", callback_data="back_to_admin")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -461,35 +485,6 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"🆔 ID: {target_id}\n\n"
                 f"Qancha kun ruxsat beramiz?",
                 reply_markup=reply_markup
-            )
-            
-        except ValueError:
-            await update.message.reply_text("❌ Noto'g'ri ID. Qaytadan urinib ko'ring.")
-            
-    elif action == 'waiting_for_remove_id':
-        # O'chirish uchun ID
-        try:
-            target_id = int(text.strip())
-            remove_permission(target_id)
-            
-            await update.message.reply_text(
-                f"✅ {target_id} ID li foydalanuvchi ruxsati olib tashlandi!"
-            )
-            
-            # Admin panelga qaytish
-            context.user_data['admin_action'] = None
-            
-            keyboard = [
-                [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_add")],
-                [InlineKeyboardButton("🗑️ Ruxsat olib tashlash", callback_data="admin_remove")],
-                [InlineKeyboardButton("📋 Ruxsatlar ro'yxati", callback_data="admin_list")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(
-                "👑 *Admin panel*",
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
             )
             
         except ValueError:
@@ -502,7 +497,6 @@ async def days_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # Faqat admin uchun
     if user_id != ADMIN_ID:
         return
     
@@ -515,27 +509,89 @@ async def days_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     days_map = {
         'days_3': 3,
-        'days_5': 5,
+        'days_7': 7,
         'days_10': 10,
+        'days_20': 20,
         'days_30': 30
     }
     
     if data in days_map:
         days = days_map[data]
         
-        # Ruxsat berish
         add_permission(target_id, "user", days)
+        
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"✅ *Ruxsat berildi!*\n\n"
+                     f"Sizga {days} kun muddat bilan botdan foydalanish ruxsati berildi.\n"
+                     f"/start ni bosing va ishlatishni boshlang.",
+                parse_mode='Markdown'
+            )
+            user_notified = "Xabar yuborildi ✅"
+        except Exception as e:
+            user_notified = "Xabar yuborilmadi (foydalanuvchi botni blocklagan) ⚠️"
+            logger.error(f"Xabar yuborilmadi {target_id}: {e}")
+        
+        keyboard = [[InlineKeyboardButton("🔙 Admin panel", callback_data="back_to_admin")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
             f"✅ *Ruxsat berildi!*\n\n"
             f"🆔 ID: {target_id}\n"
-            f"📅 Muddat: {days} kun\n\n"
+            f"📅 Muddat: {days} kun\n"
+            f"📨 {user_notified}\n\n"
             f"Foydalanuvchi endi botdan foydalana oladi.",
+            reply_markup=reply_markup,
             parse_mode='Markdown'
         )
         
         context.user_data['admin_action'] = None
         context.user_data['target_id'] = None
+
+# ==================== USER MENYU ====================
+async def user_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    keyboard = [
+        [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
+        [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")],
+        [InlineKeyboardButton("🔙 Admin panel", callback_data="back_to_admin")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "🎬 *Botdan foydalanish*\n\n"
+        "Tanlang:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+# ==================== BACK TO ADMIN ====================
+async def back_to_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    if user_id != ADMIN_ID:
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_menu")],
+        [InlineKeyboardButton("📋 Ruxsatlarni boshqarish", callback_data="admin_manage")],
+        [InlineKeyboardButton("🎬 Botdan foydalanish", callback_data="user_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "👑 *Admin panel*\n\nNima qilmoqchisiz?",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
 # ==================== ASOSIY MENYU ====================
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -544,7 +600,6 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     user_id = update.effective_user.id
     
-    # Ruxsatni tekshirish
     has_perm, expires = check_permission(user_id)
     if not has_perm and user_id != ADMIN_ID:
         await query.edit_message_text("❌ Ruxsat yo'q!")
@@ -568,17 +623,15 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         context.user_data['state'] = WAITING_FOR_SRT
 
-# ==================== YOUTUBE HAVOLASINI QAYTA ISHLASH ====================
+# ==================== YOUTUBE HAVOLA ====================
 async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Faqat YouTube kutilayotgan holatda
     if context.user_data.get('state') != WAITING_FOR_YOUTUBE:
         return
     
     url = update.message.text
     
-    # Ruxsatni tekshirish
     has_perm, expires = check_permission(user_id)
     if not has_perm and user_id != ADMIN_ID:
         await update.message.reply_text("❌ Ruxsat yo'q!")
@@ -586,24 +639,19 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     progress_msg = await update.message.reply_text("⏳ Video tekshirilmoqda...")
     
-    # YouTube subtitrlarni olish
     video_title, available_langs, info = await get_youtube_subtitles(url)
     
     if not available_langs:
-        # Subtitr yo'q
         await progress_msg.edit_text(
             "😕 *Subtitr topilmadi!*\n\n"
             "Boshqa drama/video yuboring, buning subtitr fayli yo'q.",
             parse_mode='Markdown'
         )
-        # Holatni tozalash
         context.user_data['state'] = None
         return
     
-    # Subtitr bor - tillarni ko'rsatish
     keyboard = []
     
-    # Qo'lda kiritilganlar
     for lang_code, lang_info in available_langs.items():
         if lang_info['type'] == 'manual':
             button = InlineKeyboardButton(
@@ -612,7 +660,6 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             keyboard.append([button])
     
-    # Avtomatiklar
     for lang_code, lang_info in available_langs.items():
         if lang_info['type'] == 'auto':
             button = InlineKeyboardButton(
@@ -625,7 +672,6 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Ma'lumotlarni saqlash
     context.user_data['video_url'] = url
     context.user_data['video_title'] = video_title
     context.user_data['langs'] = available_langs
@@ -637,7 +683,6 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode='Markdown'
     )
     
-    # Holatni tozalash
     context.user_data['state'] = None
 
 # ==================== SUBTITR YUKLASH ====================
@@ -648,7 +693,6 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     data = query.data
     
-    # Ruxsatni tekshirish
     has_perm, expires = check_permission(user_id)
     if not has_perm and user_id != ADMIN_ID:
         await query.edit_message_text("❌ Ruxsat yo'q!")
@@ -667,20 +711,16 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         lang_info = langs[lang_code]
         
-        # Yuklanayotgani haqida xabar
         await query.edit_message_text(
             f"⏳ {lang_info['name']} yuklanmoqda...",
             parse_mode='Markdown'
         )
         
-        # Subtitrni yuklab olish
         srt_file = await download_subtitle(url, lang_code, lang_info['type'])
         
         if srt_file:
-            # Faylni saqlash
             save_user_file(user_id, srt_file, video_title, lang_info['name'])
             
-            # Faylni yuborish
             with open(srt_file, 'rb') as f:
                 await context.bot.send_document(
                     chat_id=user_id,
@@ -690,7 +730,6 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"🌐 Til: {lang_info['name']}"
                 )
             
-            # Tarjima tugmasi
             keyboard = [
                 [InlineKeyboardButton("🧠 AI tarjima (O'zbek)", callback_data="translate_srt")],
                 [InlineKeyboardButton("🔙 Asosiy menyu", callback_data="main_back")]
@@ -705,34 +744,46 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             
-            # Progress xabarni o'chirish
             await query.delete_message()
             
         else:
             await query.edit_message_text("❌ Subtitr yuklab olishda xatolik yuz berdi.")
     
     elif data == "main_back":
-        # Asosiy menyuga qaytish
-        keyboard = [
-            [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
-            [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")]
-        ]
+        if user_id == ADMIN_ID:
+            keyboard = [
+                [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
+                [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")],
+                [InlineKeyboardButton("🔙 Admin panel", callback_data="back_to_admin")]
+            ]
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
+                [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")]
+            ]
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        if user_id != ADMIN_ID:
+            has_perm, expires = check_permission(user_id)
+            days_left = (expires - datetime.datetime.now()).days if has_perm else 0
+            text = f"✅ *Xush kelibsiz!*\n\n🕒 Ruxsatingiz: {days_left} kun qoldi\n\nTanlang:"
+        else:
+            text = "Tanlang:"
+        
         await query.edit_message_text(
-            "Tanlang:",
-            reply_markup=reply_markup
+            text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
 
 # ==================== SRT FAYLNI QAYTA ISHLASH ====================
 async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Faqat SRT kutilayotgan holatda
     if context.user_data.get('state') != WAITING_FOR_SRT:
         return
     
-    # Ruxsatni tekshirish
     has_perm, expires = check_permission(user_id)
     if not has_perm and user_id != ADMIN_ID:
         await update.message.reply_text("❌ Ruxsat yo'q!")
@@ -744,7 +795,6 @@ async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Faqat .srt fayl yuboring!")
         return
     
-    # Faylni yuklab olish
     file = await context.bot.get_file(document.file_id)
     
     with tempfile.NamedTemporaryFile(suffix='.srt', delete=False) as tmp_file:
@@ -752,10 +802,8 @@ async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await file.download_to_drive(temp_filename)
     
-    # Faylni saqlash
     save_user_file(user_id, temp_filename, document.file_name, "Yuklangan fayl")
     
-    # Tarjima tugmasi
     keyboard = [
         [InlineKeyboardButton("🧠 AI tarjima (O'zbek)", callback_data="translate_srt")],
         [InlineKeyboardButton("🔙 Asosiy menyu", callback_data="main_back")]
@@ -769,7 +817,6 @@ async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
     
-    # Holatni tozalash
     context.user_data['state'] = None
 
 # ==================== TARJIMA QILISH ====================
@@ -780,21 +827,18 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     data = query.data
     
-    # Ruxsatni tekshirish
     has_perm, expires = check_permission(user_id)
     if not has_perm and user_id != ADMIN_ID:
         await query.edit_message_text("❌ Ruxsat yo'q!")
         return
     
     if data == "translate_srt":
-        # Foydalanuvchi faylini olish
         srt_file, video_title, original_lang = get_user_file(user_id)
         
         if not srt_file or not os.path.exists(srt_file):
             await query.edit_message_text("❌ Fayl topilmadi. Avval subtitr yuklang!")
             return
         
-        # YOZUV - DeepSeek nomi YO'Q
         await query.edit_message_text(
             "🧠 *Sun'iy intellekt orqali sifatli tarjima qilinmoqda...*\n\n"
             "• Bu bir necha daqiqa olishi mumkin\n"
@@ -803,11 +847,9 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode='Markdown'
         )
         
-        # Tarjima qilish
         translated_file = await translate_srt_file(srt_file, "uzbek")
         
         if translated_file and os.path.exists(translated_file):
-            # Faylni yuborish
             with open(translated_file, 'rb') as f:
                 await context.bot.send_document(
                     chat_id=user_id,
@@ -819,17 +861,23 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     parse_mode='Markdown'
                 )
             
-            # Vaqtinchalik faylni o'chirish
             try:
                 os.remove(translated_file)
             except:
                 pass
             
-            # Asosiy menyu tugmalari
-            keyboard = [
-                [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
-                [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")]
-            ]
+            if user_id == ADMIN_ID:
+                keyboard = [
+                    [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
+                    [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")],
+                    [InlineKeyboardButton("🔙 Admin panel", callback_data="back_to_admin")]
+                ]
+            else:
+                keyboard = [
+                    [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
+                    [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")]
+                ]
+            
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await context.bot.send_message(
@@ -838,7 +886,6 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 reply_markup=reply_markup
             )
             
-            # Progress xabarni o'chirish
             await query.delete_message()
             
         else:
@@ -851,17 +898,19 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     """Botni ishga tushirish"""
     
-    # Bazani yaratish
     init_db()
     
-    # Botni yaratish
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Handlerlar
     application.add_handler(CommandHandler("start", start))
     
     # Callback handlerlar
-    application.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
+    application.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="^admin_menu$"))
+    application.add_handler(CallbackQueryHandler(admin_manage_callback, pattern="^admin_manage$"))
+    application.add_handler(CallbackQueryHandler(remove_user_callback, pattern="^remove_"))
+    application.add_handler(CallbackQueryHandler(user_menu_callback, pattern="^user_menu$"))
+    application.add_handler(CallbackQueryHandler(back_to_admin_callback, pattern="^back_to_admin$"))
     application.add_handler(CallbackQueryHandler(days_callback, pattern="^days_"))
     application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_"))
     application.add_handler(CallbackQueryHandler(subtitle_callback, pattern="^sub_"))
@@ -872,10 +921,8 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_youtube_url))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_srt_file))
     
-    # Botni ishga tushirish
     print("🤖 Bot ishga tushdi...")
     print(f"👑 Admin ID: {ADMIN_ID}")
-    print(f"🤖 Bot token: {BOT_TOKEN[:10]}...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
