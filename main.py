@@ -345,7 +345,6 @@ async def start_command(client, message):
         text += "Botdan foydalanish uchun kanalingizni qo'shing:\n\n"
         text += "1️⃣ '➕ Kanal qo'shish' tugmasini bosing\n"
         text += "2️⃣ Kanal ID sini yozing\n"
-        text += "3️⃣ TEST tugmasini bosing"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")],
             [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
@@ -507,7 +506,7 @@ async def handle_admin_input(client, message):
         await message.reply_text(f"❌ Xatolik: {str(e)}")
         temp_data.pop(user_id, None)
 
-# ==================== KANAL ID QABUL QILISH ====================
+# ==================== KANAL ID QABUL QILISH (AVTOMATIK /test) ====================
 @app.on_message()
 async def handle_channel_id_input(client, message):
     if message.chat.type != enums.ChatType.PRIVATE:
@@ -543,46 +542,12 @@ async def handle_channel_id_input(client, message):
         )
         return
     
-    try:
-        chat_id = int(text)
-        
-        # Kanal mavjudligini tekshirish
-        try:
-            chat = await client.get_chat(chat_id)
-            chat_title = chat.title
-            print(f"✅ Kanal topildi: {chat_title} ({chat_id})")
-        except Exception as e:
-            await message.reply_text(
-                f"❌ **KANAL TOPILMADI!**\n\n"
-                f"ID: `{chat_id}`\n"
-                f"Xato: {e}\n\n"
-                f"📌 Tekshirib qaytadan yuboring:"
-            )
-            return
-        
-        # ID ni vaqtinchalik saqlash
-        temp_data[user_id]["chat_id"] = chat_id
-        temp_data[user_id]["chat_title"] = chat_title
-        temp_data[user_id]["action"] = "channel_id_received"
-        print(f"📝 ID saqlandi: {user_id} -> {chat_id}")
-        
-        # TEST tugmasini ko'rsatish
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"✅ TEST /test {chat_id}", callback_data=f"execute_test_{chat_id}")],
-            [InlineKeyboardButton("🔄 Qaytadan yozish", callback_data="add_channel")],
-            [InlineKeyboardButton("🔙 Bekor qilish", callback_data="my_channels_list")]
-        ])
-        
-        await message.reply_text(
-            f"✅ **ID qabul qilindi!**\n\n"
-            f"📌 Kanal: {chat_title}\n"
-            f"🆔 ID: `{chat_id}`\n\n"
-            f"Endi quyidagi tugmani bosing:",
-            reply_markup=keyboard
-        )
-        
-    except Exception as e:
-        await message.reply_text(f"❌ Xatolik: {str(e)}\n\nQaytadan urinib ko'ring:")
+    # AVTOMATIK /test KOMANDASINI BAJARISH
+    fake_message = message
+    fake_message.text = f"/test {text}"
+    
+    # test_add_channel funksiyasini chaqirish
+    await test_add_channel(client, fake_message)
 
 # ==================== FORWARD QILISH ====================
 @app.on_message()
@@ -847,7 +812,7 @@ async def set_time_command(client, message):
     except:
         await message.reply_text("❌ Xato! Masalan: /settime 5")
 
-# ==================== A'ZOLAR RO'YXATI (ID BILAN) ====================
+# ==================== CALLBACK HANDLER ====================
 @app.on_callback_query()
 async def handle_callbacks(client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
@@ -914,7 +879,7 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             "➕ **KANAL QO'SHISH**\n\n"
             "1-qadam: Kanal ID sini yuboring:\n"
             "Misol: `-100123456789`\n\n"
-            "📌 ID ni yozganingizdan keyin, men sizga TEST tugmasini beraman.",
+            "📌 ID ni yozganingizdan keyin, men kanalni tekshirib qo'shaman.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
             ])
@@ -922,84 +887,6 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         # Foydalanuvchi holatini saqlash
         temp_data[user_id] = {"action": "awaiting_channel_id"}
         print(f"📝 ID kutilyapti: {user_id}")
-        await callback_query.answer()
-        return
-    
-    # ===== TEST TUGMASI ORQALI KANAL QO'SHISH =====
-    if data.startswith("execute_test_"):
-        chat_id = int(data.split("_")[2])
-        
-        await callback_query.message.edit_text(f"⏳ **TEST /test {chat_id} bajarilmoqda...**")
-        
-        try:
-            # Kanal mavjudligini tekshirish
-            try:
-                chat = await client.get_chat(chat_id)
-                chat_title = chat.title
-            except Exception as e:
-                await callback_query.message.edit_text(
-                    f"❌ **KANAL TOPILMADI!**\n\n"
-                    f"ID: `{chat_id}`\n"
-                    f"Xato: {e}\n\n"
-                    f"Qaytadan urinib ko'ring.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("➕ Qaytadan kanal qo'shish", callback_data="add_channel")],
-                        [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
-                    ])
-                )
-                return
-            
-            # Bot adminligini tekshirish
-            is_admin, status = await check_bot_admin(client, chat_id)
-            
-            if not is_admin:
-                await callback_query.message.edit_text(
-                    f"❌ **BOT ADMIN EMAS!**\n\n"
-                    f"📌 Kanal: {chat_title}\n"
-                    f"🆔 ID: `{chat_id}`\n\n"
-                    f"✅ Kanalda @uzdramadubbot yozib tekshiring",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("➕ Qaytadan kanal qo'shish", callback_data="add_channel")],
-                        [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
-                    ])
-                )
-                return
-            
-            # Kanalni qo'shish
-            success = await add_channel_for_user(client, user_id, chat_id, chat_title)
-            
-            if success:
-                # Vaqtinchalik ma'lumotlarni tozalash
-                if user_id in temp_data:
-                    temp_data.pop(user_id, None)
-                
-                reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
-                await callback_query.message.edit_text(
-                    f"✅ **KANAL MUVOFFAQIYATLI QO'SHILDI!**\n\n"
-                    f"📌 {chat_title}\n"
-                    f"🆔 `{chat_id}`\n\n"
-                    f"Endi /start ni bosing",
-                    reply_markup=reply_markup
-                )
-            else:
-                await callback_query.message.edit_text(
-                    "❌ **KANAL QO'SHILMADI!**\n\n"
-                    "Noma'lum xatolik yuz berdi.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("➕ Qaytadan kanal qo'shish", callback_data="add_channel")],
-                        [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
-                    ])
-                )
-                
-        except Exception as e:
-            await callback_query.message.edit_text(
-                f"❌ **XATOLIK!**\n\n{str(e)}\n\nQaytadan urinib ko'ring.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ Qaytadan kanal qo'shish", callback_data="add_channel")],
-                    [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
-                ])
-            )
-        
         await callback_query.answer()
         return
     
@@ -1121,9 +1008,15 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         await callback_query.answer()
         return
     
-    # ===== A'ZOLARNI KO'RISH (ID BILAN) =====
-    if data.startswith("view_members_"):
-        chat_id = int(data.split("_")[2])
+    # ===== A'ZOLAR RO'YXATI (BLOKLASH TUGMASI BILAN) =====
+    if data == "members":
+        if user_id not in user_channels:
+            await callback_query.answer("Avval kanal qo'shing!", show_alert=True)
+            return
+        
+        chat_id = user_channels[user_id]["chat_id"]
+        channel_title = user_channels[user_id]["title"]
+        
         await callback_query.message.edit_text("👥 **A'zolar yuklanmoqda...**")
         
         try:
@@ -1133,30 +1026,106 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
                 if not user.is_bot:
                     members_list.append({
                         "id": user.id,
-                        "name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
+                        "full_name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
                         "username": user.username
                     })
             
-            text = f"👥 **A'ZOLAR ({len(members_list)} ta)**\n\n"
+            # Sahifalash
+            page = temp_data.get(user_id, {}).get("members_page", 0)
+            items_per_page = 5
+            start = page * items_per_page
+            end = start + items_per_page
+            current_members = members_list[start:end]
+            total_pages = (len(members_list) + items_per_page - 1) // items_per_page
             
-            for i, user in enumerate(members_list[:30], 1):
-                if user['username']:
-                    text += f"{i}. @{user['username']}\n   ID: `{user['id']}`\n   {user['name']}\n\n"
-                else:
-                    text += f"{i}. {user['name']}\n   ID: `{user['id']}`\n\n"
+            text = f"👥 **A'ZOLAR**\n📌 {channel_title}\n\n"
+            text += f"📊 Jami: {len(members_list)} ta a'zo\n"
+            text += f"📄 Sahifa: {page + 1}/{total_pages}\n\n"
             
-            if len(members_list) > 30:
-                text += f"... va yana {len(members_list) - 30} ta a'zo"
+            keyboard = []
             
-            # Orqaga qaytish tugmasi
-            owner_id = get_channel_owner(chat_id)
-            if owner_id == YOUR_ID:
-                back_callback = f"my_channel_{chat_id}"
-            else:
-                back_callback = f"user_channel_{owner_id}"
+            # Har bir a'zo uchun 2 ta tugma: ism va bloklash
+            for user in current_members:
+                display_name = f"@{user['username']}" if user['username'] else user['full_name'][:20]
+                
+                # Bloklash rejada bormi?
+                is_scheduled = False
+                if chat_id in scheduled and user['id'] in scheduled[chat_id]:
+                    is_scheduled = True
+                    ban_time = scheduled[chat_id][user['id']]["time"]
+                    time_str = format_time(ban_time, user_id)
+                    display_name += f" ⏰ ({time_str})"
+                
+                # Ikkita tugma: a'zo nomi va bloklash tugmasi
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"👤 {display_name}", 
+                        callback_data=f"user_info_{chat_id}_{user['id']}"
+                    ),
+                    InlineKeyboardButton(
+                        "⏰ Bloklash", 
+                        callback_data=f"ban_menu_{chat_id}_{user['id']}"
+                    )
+                ])
+            
+            # Navigatsiya tugmalari
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Oldingi", callback_data=f"members_page_{page-1}"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("➡️ Keyingi", callback_data=f"members_page_{page+1}"))
+            
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+            
+            keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")])
+            
+            temp_data[user_id] = {"members_page": page}
+            await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            await callback_query.answer()
+            
+        except Exception as e:
+            await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
+        return
+    
+    # ===== SAHIFALASH =====
+    if data.startswith("members_page_"):
+        page = int(data.split("_")[2])
+        temp_data[user_id] = {"members_page": page}
+        callback_query.data = "members"
+        await handle_callbacks(client, callback_query)
+        return
+    
+    # ===== FOYDALANUVCHI MA'LUMOTI =====
+    if data.startswith("user_info_"):
+        parts = data.split("_")
+        chat_id = int(parts[2])
+        target_user_id = int(parts[3])
+        
+        try:
+            user = await client.get_users(target_user_id)
+            username = f"@{user.username}" if user.username else "username yo'q"
+            full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+            
+            # Bloklash holatini tekshirish
+            is_scheduled = False
+            ban_time_str = ""
+            if chat_id in scheduled and target_user_id in scheduled[chat_id]:
+                is_scheduled = True
+                ban_time = scheduled[chat_id][target_user_id]["time"]
+                ban_time_str = format_time(ban_time, user_id)
+            
+            text = f"👤 **FOYDALANUVCHI MA'LUMOTI**\n\n"
+            text += f"📛 Ism: {full_name}\n"
+            text += f"🆔 ID: `{target_user_id}`\n"
+            text += f"📱 Username: {username}\n"
+            
+            if is_scheduled:
+                text += f"⏰ Bloklash rejada: {ban_time_str}\n"
             
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Orqaga", callback_data=back_callback)]
+                [InlineKeyboardButton("⏰ Bloklash vaqtini tanlash", callback_data=f"ban_menu_{chat_id}_{target_user_id}")],
+                [InlineKeyboardButton("🔙 Orqaga", callback_data="members")]
             ])
             
             await callback_query.message.edit_text(text, reply_markup=keyboard)
@@ -1164,6 +1133,161 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             
         except Exception as e:
             await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
+        return
+    
+    # ===== BLOKLASH MENYUSI =====
+    if data.startswith("ban_menu_"):
+        parts = data.split("_")
+        chat_id = int(parts[2])
+        target_user_id = int(parts[3])
+        
+        try:
+            user = await client.get_users(target_user_id)
+            username = f"@{user.username}" if user.username else "username yo'q"
+            full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+            
+            # Bloklash holatini tekshirish
+            is_scheduled = False
+            ban_time_str = ""
+            if chat_id in scheduled and target_user_id in scheduled[chat_id]:
+                is_scheduled = True
+                ban_time = scheduled[chat_id][target_user_id]["time"]
+                ban_time_str = format_time(ban_time, user_id)
+            
+            text = f"⏰ **BLOKLASH VAQTINI TANLANG**\n\n"
+            text += f"👤 {full_name}\n"
+            text += f"🆔 `{target_user_id}`\n"
+            text += f"📱 {username}\n\n"
+            
+            if is_scheduled:
+                text += f"⚠️ Hozirgi bloklash: {ban_time_str}\n"
+                text += "Yangi vaqt tanlang yoki bekor qiling:\n\n"
+            else:
+                text += "Bloklash vaqtini tanlang:\n\n"
+            
+            # Vaqt tugmalari
+            keyboard = [
+                [
+                    InlineKeyboardButton("⏱️ 5m", callback_data=f"ban_user_{chat_id}_{target_user_id}_5m"),
+                    InlineKeyboardButton("⏱️ 10m", callback_data=f"ban_user_{chat_id}_{target_user_id}_10m"),
+                    InlineKeyboardButton("⏱️ 30m", callback_data=f"ban_user_{chat_id}_{target_user_id}_30m")
+                ],
+                [
+                    InlineKeyboardButton("📅 1k", callback_data=f"ban_user_{chat_id}_{target_user_id}_1k"),
+                    InlineKeyboardButton("📅 3k", callback_data=f"ban_user_{chat_id}_{target_user_id}_3k"),
+                    InlineKeyboardButton("📅 7k", callback_data=f"ban_user_{chat_id}_{target_user_id}_7k")
+                ],
+                [
+                    InlineKeyboardButton("📅 30k", callback_data=f"ban_user_{chat_id}_{target_user_id}_30k"),
+                    InlineKeyboardButton("📆 1oy", callback_data=f"ban_user_{chat_id}_{target_user_id}_1oy"),
+                    InlineKeyboardButton("📆 3oy", callback_data=f"ban_user_{chat_id}_{target_user_id}_3oy")
+                ]
+            ]
+            
+            # Agar bloklash rejada bo'lsa, bekor qilish tugmasi
+            if is_scheduled:
+                keyboard.append([InlineKeyboardButton("❌ Bloklashni bekor qilish", callback_data=f"unban_user_{chat_id}_{target_user_id}")])
+            
+            keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="members")])
+            
+            await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            await callback_query.answer()
+            
+        except Exception as e:
+            await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
+        return
+    
+    # ===== BLOKLASHNI BAJARISH =====
+    if data.startswith("ban_user_"):
+        parts = data.split("_")
+        chat_id = int(parts[2])
+        target_user_id = int(parts[3])
+        time_str = parts[4]
+        
+        try:
+            user = await client.get_users(target_user_id)
+            username = f"@{user.username}" if user.username else "username yo'q"
+            full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        except:
+            username = "noma'lum"
+            full_name = "noma'lum"
+        
+        minutes = parse_time(time_str)
+        ban_time = datetime.utcnow() + timedelta(minutes=minutes)
+        
+        if chat_id not in scheduled:
+            scheduled[chat_id] = {}
+        
+        # Eski bloklash borligini tekshirish
+        old_ban = None
+        if target_user_id in scheduled.get(chat_id, {}):
+            old_ban = scheduled[chat_id][target_user_id]["time"]
+        
+        scheduled[chat_id][target_user_id] = {
+            "username": username,
+            "full_name": full_name,
+            "time": ban_time,
+            "user_id": target_user_id,
+            "join_time": user_history.get(chat_id, {}).get(target_user_id, {}).get("join_time", datetime.utcnow()),
+            "permanent": True,
+            "chat_id": chat_id
+        }
+        
+        save_data()
+        
+        sana = format_time(ban_time, user_id)
+        
+        if old_ban:
+            old_sana = format_time(old_ban, user_id)
+            message = f"✅ **BLOKLASH VAQTI O'ZGARTIRILDI!**\n\n"
+            message += f"👤 {full_name}\n"
+            message += f"🆔 `{target_user_id}`\n"
+            message += f"⏰ Eski vaqt: {old_sana}\n"
+            message += f"⏰ Yangi vaqt: {sana} ({time_str})"
+        else:
+            message = f"✅ **BLOKLASH REJALASHTIRILDI!**\n\n"
+            message += f"👤 {full_name}\n"
+            message += f"🆔 `{target_user_id}`\n"
+            message += f"⏰ Vaqt: {time_str}\n"
+            message += f"📅 Sana: {sana}"
+        
+        await callback_query.message.edit_text(
+            message,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 A'zolar ro'yxati", callback_data="members")]
+            ])
+        )
+        await callback_query.answer("✅ Bajarildi!")
+        return
+    
+    # ===== BLOKLASHNI BEKOR QILISH =====
+    if data.startswith("unban_user_"):
+        parts = data.split("_")
+        chat_id = int(parts[2])
+        target_user_id = int(parts[3])
+        
+        if chat_id in scheduled and target_user_id in scheduled[chat_id]:
+            user_data = scheduled[chat_id][target_user_id]
+            del scheduled[chat_id][target_user_id]
+            save_data()
+            
+            await callback_query.message.edit_text(
+                f"✅ **BLOKLASH BEKOR QILINDI!**\n\n"
+                f"👤 {user_data['full_name']}\n"
+                f"🆔 `{target_user_id}`\n\n"
+                f"Endi foydalanuvchi bloklanmaydi.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 A'zolar ro'yxati", callback_data="members")]
+                ])
+            )
+        else:
+            await callback_query.message.edit_text(
+                "❌ Bu foydalanuvchi bloklash rejasida yo'q!",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Orqaga", callback_data="members")]
+                ])
+            )
+        await callback_query.answer()
         return
     
     # ===== MONITORNI O'CHIRISH/YOQISH =====
@@ -1539,7 +1663,7 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         current = time_settings.get(user_id, 5)
         text = f"🕐 **VAQT SOZLASH**\n\nHozirgi: UTC+{current}\nVaqt: {local_time(user_id).strftime('%H:%M %d.%m.%Y')}"
         
-        back_button = "back_to_main" if is_owner(user_id) else "back_to_user_menu"
+        back_button = "back_to_main" if is_owner(user_id) else "back_to_main"
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("UTC+0", callback_data="settime_0"),
@@ -1558,12 +1682,57 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         save_data()
         await callback_query.answer(f"✅ Vaqt UTC+{soat} qilib sozlandi")
         
-        back_button = "back_to_main" if is_owner(user_id) else "back_to_user_menu"
+        back_button = "back_to_main" if is_owner(user_id) else "back_to_main"
         
         await callback_query.message.edit_text(
             f"✅ **VAQT SOZLANDI!**\n\n🕐 UTC+{soat}\n📅 {local_time(user_id).strftime('%d.%m.%Y %H:%M:%S')}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data=back_button)]])
         )
+        return
+    
+    # ===== A'ZOLARNI KO'RISH (ID BILAN) =====
+    if data.startswith("view_members_"):
+        chat_id = int(data.split("_")[2])
+        await callback_query.message.edit_text("👥 **A'zolar yuklanmoqda...**")
+        
+        try:
+            members_list = []
+            async for member in client.get_chat_members(chat_id):
+                user = member.user
+                if not user.is_bot:
+                    members_list.append({
+                        "id": user.id,
+                        "name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
+                        "username": user.username
+                    })
+            
+            text = f"👥 **A'ZOLAR ({len(members_list)} ta)**\n\n"
+            
+            for i, user in enumerate(members_list[:30], 1):
+                if user['username']:
+                    text += f"{i}. @{user['username']}\n   ID: `{user['id']}`\n   {user['name']}\n\n"
+                else:
+                    text += f"{i}. {user['name']}\n   ID: `{user['id']}`\n\n"
+            
+            if len(members_list) > 30:
+                text += f"... va yana {len(members_list) - 30} ta a'zo"
+            
+            # Orqaga qaytish tugmasi
+            owner_id = get_channel_owner(chat_id)
+            if owner_id == YOUR_ID:
+                back_callback = f"my_channel_{chat_id}"
+            else:
+                back_callback = f"user_channel_{owner_id}"
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Orqaga", callback_data=back_callback)]
+            ])
+            
+            await callback_query.message.edit_text(text, reply_markup=keyboard)
+            await callback_query.answer()
+            
+        except Exception as e:
+            await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
         return
     
     # ===== BLOKLASHLAR =====
@@ -1758,9 +1927,10 @@ if __name__ == "__main__":
     print("   • 👑 Admin panel - ruxsat berganlar")
     print("   • 🔄 Yangilash - barcha ma'lumotlar")
     print("   • 📢 @uzdramadubbot - gruppa va kanalda")
-    print("   • 📝 ID yozish + TEST tugmasi")
+    print("   • 📝 ID yozish - avtomatik /test")
     print("   • 📎 Forward orqali kanal qo'shish")
     print("   • 👥 A'zolar ro'yxati ID bilan")
+    print("   • ⏰ Bloklash tugmasi - har bir a'zo yonida")
     print("   • 🔴 Info o'chirish / 🟢 Info yoqish")
     print("   • 🗑 Kanalni botdan o'chirish")
     print("=" * 60)
