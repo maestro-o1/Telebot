@@ -22,12 +22,12 @@ app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ==================== MA'LUMOTLAR OMBIORI ====================
 AUTHORIZED_USERS = [YOUR_ID]  # Ruxsat berilgan foydalanuvchilar
-user_channels = {}  # {user_id: {"chat_id": ..., "title": ...}} - har bir user o'z kanali
-all_channels = {}   # {chat_id: {"owner_id": ..., "title": ...}} - barcha kanallar
+user_channels = {}  # {user_id: {"chat_id": ..., "title": ..., "monitor": True/False}}
+all_channels = {}   # {chat_id: {"owner_id": ..., "title": ..., "monitor": True/False}}
 scheduled = {}      # {chat_id: {user_id: {...}}} - rejalashtirilgan bloklashlar
 user_history = {}   # {chat_id: {user_id: {...}}} - foydalanuvchilar tarixi
 time_settings = {}  # {user_id: soat_farqi} - vaqt sozlamalari
-temp_data = {}      # vaqtinchalik ma'lumotlar (action va boshqalar)
+temp_data = {}      # vaqtinchalik ma'lumotlar
 last_check = {}     # duplicate habarlar uchun
 processed_events = defaultdict(lambda: {"time": 0, "count": 0})  # event dublikatlarini bloklash
 
@@ -68,10 +68,7 @@ def save_data():
         
         # all_channels ni saqlash
         for cid, info in all_channels.items():
-            data["all_channels"][str(cid)] = {
-                "owner_id": info["owner_id"],
-                "title": info["title"]
-            }
+            data["all_channels"][str(cid)] = info
         
         # scheduled ni saqlash
         for chat_id, users in scheduled.items():
@@ -116,19 +113,15 @@ def load_data():
             with open(DATA_FILE, "r") as f:
                 data = json.load(f)
             
-            # authorized_users ni yuklash
             AUTHORIZED_USERS.clear()
             AUTHORIZED_USERS.extend(data.get("authorized_users", [YOUR_ID]))
             
-            # user_channels ni yuklash
             for uid, channel in data.get("user_channels", {}).items():
                 user_channels[int(uid)] = channel
             
-            # all_channels ni yuklash
             for cid, info in data.get("all_channels", {}).items():
                 all_channels[int(cid)] = info
             
-            # scheduled ni yuklash
             for chat_id, users in data.get("scheduled", {}).items():
                 scheduled[int(chat_id)] = {}
                 for user_id, user_data in users.items():
@@ -142,7 +135,6 @@ def load_data():
                         "chat_id": int(chat_id)
                     }
             
-            # user_history ni yuklash
             for chat_id, users in data.get("user_history", {}).items():
                 user_history[int(chat_id)] = {}
                 for user_id, hist_data in users.items():
@@ -158,9 +150,7 @@ def load_data():
                         "chat_title": hist_data.get("chat_title", "")
                     }
             
-            # time_settings ni yuklash
             time_settings.update(data.get("time_settings", {}))
-            
             print(f"✅ Ma'lumotlar yuklandi")
     except Exception as e:
         print(f"❌ Yuklash xatosi: {e}")
@@ -169,26 +159,21 @@ load_data()
 
 # ==================== FOYDALANUVCHI FUNKSIYALARI ====================
 def is_owner(user_id):
-    """Foydalanuvchi bot egasimi?"""
     return user_id == YOUR_ID
 
 def is_authorized(user_id):
-    """Foydalanuvchi ruxsatlanganmi?"""
     return user_id in AUTHORIZED_USERS
 
 def can_access_channel(user_id, chat_id):
-    """Foydalanuvchi bu kanalga kirish huquqiga egami?"""
     if user_id == YOUR_ID:
         return True
     return user_id in user_channels and user_channels[user_id]["chat_id"] == chat_id
 
 def get_channel_owner(chat_id):
-    """Kanal egasini qaytarish"""
     return all_channels.get(chat_id, {}).get("owner_id")
 
 # ==================== VAQTNI PARSE QILISH ====================
 def parse_time(time_str):
-    """Vaqt matnini minutlarga o'tkazish"""
     try:
         time_str = time_str.lower().strip()
         number = ''
@@ -222,38 +207,34 @@ def parse_time(time_str):
 
 # ==================== BOT ADMINLIGINI TEKSHIRISH ====================
 async def check_bot_admin(client, chat_id):
-    """Bot adminligini tekshirish"""
     me = await client.get_me()
-    
     try:
         member = await client.get_chat_member(chat_id, me.id)
         if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
             return True, member.status
     except:
         pass
-    
     return False, None
 
 # ==================== KANAL QO'SHISH ====================
 async def add_channel_for_user(client, user_id, chat_id, chat_title):
-    """Foydalanuvchi uchun kanal qo'shish"""
-    
     if user_id in user_channels:
         old_chat_id = user_channels[user_id]["chat_id"]
         if old_chat_id in all_channels:
             del all_channels[old_chat_id]
-        # Eski kanaldagi bloklashlarni ham o'chirish
         if old_chat_id in scheduled:
             del scheduled[old_chat_id]
     
     user_channels[user_id] = {
         "chat_id": chat_id,
-        "title": chat_title
+        "title": chat_title,
+        "monitor": True
     }
     
     all_channels[chat_id] = {
         "owner_id": user_id,
-        "title": chat_title
+        "title": chat_title,
+        "monitor": True
     }
     
     save_data()
@@ -261,7 +242,6 @@ async def add_channel_for_user(client, user_id, chat_id, chat_title):
 
 # ==================== KANALNI O'CHIRISH ====================
 async def remove_channel_for_user(client, user_id):
-    """Foydalanuvchi kanalini o'chirish"""
     if user_id in user_channels:
         chat_id = user_channels[user_id]["chat_id"]
         if chat_id in all_channels:
@@ -276,93 +256,78 @@ async def remove_channel_for_user(client, user_id):
     return False, None
 
 # ==================== TUGMALAR ====================
-def get_main_keyboard(has_channel):
-    """Asosiy menyu tugmalari (oddiy user uchun)"""
-    if has_channel:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👥 A'zolar", callback_data="members")],
-            [InlineKeyboardButton("⏰ Bloklashlar", callback_data="bans")],
-            [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
-            [InlineKeyboardButton("🔄 Kanalni almashtirish", callback_data="change_channel"),
-             InlineKeyboardButton("🗑 Kanalni o'chirish", callback_data="delete_channel_confirm")],
-            [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
-        ])
-    else:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")],
-            [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
-        ])
-    return keyboard
-
-def get_admin_main_keyboard():
-    """Admin uchun asosiy tugmalar"""
+def get_main_menu_keyboard():
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Mening kanallarim", callback_data="my_channels")],
-        [InlineKeyboardButton("👥 Ruxsatlanganlar", callback_data="admin_users")],
-        [InlineKeyboardButton("➕ Ruxsat berish", callback_data="admin_add_user")],
-        [InlineKeyboardButton("❌ Ruxsatni bekor qilish", callback_data="admin_remove_user")],
-        [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats")],
-        [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")],
-        [InlineKeyboardButton("❓ Yordam", callback_data="admin_help")],
-        [InlineKeyboardButton("🔙 Asosiy menyu", callback_data="back_to_user_menu")]
+        [InlineKeyboardButton("📋 Kanallarim", callback_data="my_channels_list")],
+        [InlineKeyboardButton("📊 Statistika", callback_data="my_stats"),
+         InlineKeyboardButton("👑 Admin panel", callback_data="admin_panel")],
+        [InlineKeyboardButton("❓ Yordam", callback_data="help"),
+         InlineKeyboardButton("🔄 Yangilash", callback_data="refresh_all")]
     ])
     return keyboard
 
 def get_back_keyboard(target):
-    """Orqaga qaytish tugmasi"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Orqaga", callback_data=f"back_to_{target}")]
     ])
 
-# ==================== START (TO'G'IRLANGAN) ====================
+# ==================== START ====================
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
     user_id = message.from_user.id
     
-    # Ruxsat tekshirish
     if not is_authorized(user_id):
         await message.reply_text(
             f"❌ **Sizga ruxsat berilmagan!**\n\n"
             f"Botdan foydalanish uchun @maestro_o ga murojaat qiling.\n\n"
-            f"🆔 **Sizning ID:** `{user_id}`\n\n"
-            f"📌 Iltimos, shu ID ni @maestro_o ga yuboring."
+            f"🆔 **Sizning ID:** `{user_id}`"
         )
         return
     
-    # Admin panel (siz uchun)
     if is_owner(user_id):
-        text = f"✅ **ADMIN PANEL**\n\n"
-        text += f"👋 Xush kelibsiz, @maestro_o!\n"
-        text += f"🕐 Vaqt: {local_time(user_id).strftime('%H:%M %d.%m.%Y')}\n\n"
-        text += f"📊 **MA'LUMOT:**\n"
-        text += f"👥 Ruxsatlanganlar: {len(AUTHORIZED_USERS)-1} ta\n"
-        text += f"📌 Faol kanallar: {len(user_channels)} ta\n\n"
+        my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
+        total_users = len(AUTHORIZED_USERS) - 1
+        total_channels = len(user_channels)
+        
+        text = f"👤 **Xush kelibsiz, @maestro_o!**\n\n"
+        text += f"📊 **Statistika:**\n"
+        text += f"• Kanallaringiz: {my_channels} ta\n"
+        text += f"• Ruxsat berganlar: {total_users} ta\n"
+        text += f"• Faol kanallar: {total_channels} ta\n\n"
         text += f"🔽 Quyidagi tugmalardan foydalaning:"
         
-        await message.reply_text(text, reply_markup=get_admin_main_keyboard())
-        return  # MUHIM: return qilish kerak!
+        await message.reply_text(text, reply_markup=get_main_menu_keyboard())
     
-    # Oddiy user panel
-    if user_id in user_channels:
-        channel = user_channels[user_id]
-        text = f"✅ **SIZNING KANALINGIZ**\n\n"
-        text += f"📌 {channel['title']}\n"
-        text += f"🆔 `{channel['chat_id']}`\n\n"
-        text += "Quyidagi tugmalar orqali boshqaring:"
     else:
-        text = "👋 **XUSH KELIBSIZ!**\n\n"
-        text += "Botdan foydalanish uchun kanalingizni qo'shing:\n\n"
-        text += "• Kanal ID sini yozing: `-100123456789`\n"
-        text += "• Yoki kanaldan xabar forward qiling"
-    
-    await message.reply_text(text, reply_markup=get_main_keyboard(user_id in user_channels))
+        if user_id in user_channels:
+            channel = user_channels[user_id]
+            text = f"✅ **SIZNING KANALINGIZ**\n\n"
+            text += f"📌 {channel['title']}\n"
+            text += f"🆔 `{channel['chat_id']}`\n\n"
+            text += "Quyidagi tugmalar orqali boshqaring:"
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("👥 A'zolar", callback_data="members")],
+                [InlineKeyboardButton("⏰ Bloklashlar", callback_data="bans")],
+                [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
+                [InlineKeyboardButton("🔄 Kanalni almashtirish", callback_data="change_channel"),
+                 InlineKeyboardButton("🗑 O'chirish", callback_data="delete_channel_confirm")],
+                [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
+            ])
+        else:
+            text = "👋 **XUSH KELIBSIZ!**\n\n"
+            text += "Botdan foydalanish uchun kanalingizni qo'shing:"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")],
+                [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
+            ])
+        
+        await message.reply_text(text, reply_markup=keyboard)
 
-# ==================== @uzdramadubbot GA JAVOB (FAQAT GRUPPA) ====================
+# ==================== @uzdramadubbot GA JAVOB ====================
 @app.on_message(filters.text & filters.regex(r"^@uzdramadubbot$") & filters.group)
 async def bot_mention_group(client, message):
-    """Guruhda @uzdramadubbot yozilsa javob berish"""
     chat = message.chat
-    
     is_admin, status = await check_bot_admin(client, chat.id)
     
     if is_admin:
@@ -373,21 +338,17 @@ async def bot_mention_group(client, message):
 # ==================== ADMIN UCHUN ID QABUL QILISH ====================
 @app.on_message()
 async def handle_admin_input(client, message):
-    """Admin ID yozganda ruxsat berish"""
     if message.chat.type != enums.ChatType.PRIVATE:
         return
     
     user_id = message.from_user.id
     
-    # Faqat admin uchun
     if not is_owner(user_id):
         return
     
-    # Faqat "awaiting_user_id" holatida bo'lganida
     if user_id not in temp_data or temp_data[user_id].get("action") != "awaiting_user_id":
         return
     
-    # Komandalarni ignore qilish
     if message.text and message.text.startswith('/'):
         return
     
@@ -397,68 +358,46 @@ async def handle_admin_input(client, message):
     
     text = message.text.strip()
     
-    # Faqat raqam bo'lishi kerak
     if not text.isdigit():
-        await message.reply_text(
-            "❌ **Noto'g'ri format!**\n\n"
-            "Faqat raqamlardan iborat ID yuboring.\n"
-            "Misol: `123456789`"
-        )
+        await message.reply_text("❌ **Noto'g'ri format!** Faqat raqam yuboring.")
         return
     
     try:
         new_user_id = int(text)
         
         if new_user_id == YOUR_ID:
-            await message.reply_text("❌ Bu o'zingizning ID ingiz!")
+            await message.reply_text("❌ Bu o'zingiz!")
             temp_data.pop(user_id, None)
             return
         
-        # Foydalanuvchi mavjudligini tekshirish
         try:
             user = await client.get_users(new_user_id)
             user_name = user.first_name or "Foydalanuvchi"
         except:
-            await message.reply_text(
-                f"❌ **Foydalanuvchi topilmadi!**\n\n"
-                f"ID: `{new_user_id}`\n\n"
-                f"Bu ID Telegramda mavjud emas yoki bot bloklangan."
-            )
+            await message.reply_text(f"❌ Foydalanuvchi topilmadi! ID: `{new_user_id}`")
             temp_data.pop(user_id, None)
             return
         
-        # Ruxsat berish
         if new_user_id not in AUTHORIZED_USERS:
             AUTHORIZED_USERS.append(new_user_id)
             save_data()
             
-            await message.reply_text(
-                f"✅ **RUXSAT BERILDI!**\n\n"
-                f"👤 Foydalanuvchi: {user_name}\n"
-                f"🆔 ID: `{new_user_id}`\n\n"
-                f"Endi u botdan foydalanishi mumkin!"
-            )
+            await message.reply_text(f"✅ **RUXSAT BERILDI!**\n👤 {user_name}\n🆔 `{new_user_id}`")
             
-            # Yangi foydalanuvchiga xabar
             try:
                 await client.send_message(
                     new_user_id,
-                    f"✅ **Sizga botdan foydalanish uchun ruxsat berildi!**\n\n"
-                    f"👤 Admin: @maestro_o\n"
-                    f"🆔 Sizning ID: `{new_user_id}`\n\n"
-                    f"🔽 /start ni bosing"
+                    f"✅ **Sizga botdan foydalanish uchun ruxsat berildi!**\n\n👤 Admin: @maestro_o\n🆔 ID: `{new_user_id}`\n\n🔽 /start ni bosing"
                 )
             except:
-                await message.reply_text("⚠️ Foydalanuvchiga xabar yuborilmadi (botni bloklagan bo'lishi mumkin)")
+                await message.reply_text("⚠️ Foydalanuvchiga xabar yuborilmadi")
         else:
-            await message.reply_text(f"❌ Bu foydalanuvchi (`{new_user_id}`) allaqachon ruxsat olgan!")
+            await message.reply_text(f"❌ Bu foydalanuvchi allaqachon ruxsat olgan!")
         
-        # Holatni tozalash
         temp_data.pop(user_id, None)
         
-        # Admin panelga qaytish tugmasi
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Admin panel", callback_data="back_admin_main")]
+            [InlineKeyboardButton("🔙 Admin panel", callback_data="admin_panel")]
         ])
         await message.reply_text("🔽 Admin panelga qaytish:", reply_markup=keyboard)
         
@@ -469,8 +408,6 @@ async def handle_admin_input(client, message):
 # ==================== BOShQA XABARLAR ====================
 @app.on_message()
 async def handle_other_messages(client, message):
-    """ID yoki forward orqali kanal qo'shish"""
-    
     if message.chat.type != enums.ChatType.PRIVATE:
         return
     
@@ -482,7 +419,6 @@ async def handle_other_messages(client, message):
     if message.text and message.text.startswith('/'):
         return
     
-    # Forward qilingan xabar
     if message.forward_from_chat:
         chat_id = message.forward_from_chat.id
         chat_title = message.forward_from_chat.title
@@ -494,26 +430,14 @@ async def handle_other_messages(client, message):
             is_admin, status = await check_bot_admin(client, chat_id)
             
             if not is_admin:
-                await msg.edit_text(
-                    f"❌ **BOT ADMIN EMAS!**\n\n"
-                    f"📌 Kanal: {chat.title}\n"
-                    f"🆔 ID: `{chat_id}`\n\n"
-                    f"✅ Yechim:\n"
-                    f"1. Kanalga admin qiling\n"
-                    f"2. 'Bloklash' huquqini bering\n"
-                    f"3. Xabarni qayta forward qiling"
-                )
+                await msg.edit_text(f"❌ **BOT ADMIN EMAS!**\n📌 Kanal: {chat.title}\n🆔 ID: `{chat_id}`")
                 return
             
             await add_channel_for_user(client, user_id, chat_id, chat.title)
             
             await msg.edit_text(
-                f"✅ **KANAL QO'SHILDI!**\n\n"
-                f"📌 {chat.title}\n"
-                f"🆔 `{chat_id}`\n"
-                f"📎 Forward orqali\n\n"
-                f"Endi /start ni bosing",
-                reply_markup=get_main_keyboard(True)
+                f"✅ **KANAL QO'SHILDI!**\n\n📌 {chat.title}\n🆔 `{chat_id}`\n📎 Forward orqali\n\nEndi /start ni bosing",
+                reply_markup=get_main_menu_keyboard() if is_owner(user_id) else None
             )
             return
             
@@ -521,7 +445,6 @@ async def handle_other_messages(client, message):
             await msg.edit_text(f"❌ Xatolik: {str(e)}")
             return
     
-    # Oddiy matn (kanal ID)
     if not message.text:
         return
     
@@ -535,28 +458,13 @@ async def handle_other_messages(client, message):
             try:
                 chat = await client.get_chat(chat_id)
             except:
-                await msg.edit_text(
-                    f"❌ **KANAL TOPILMADI!**\n\n"
-                    f"ID: `{chat_id}`\n\n"
-                    f"📌 Tekshiring:\n"
-                    f"• ID to'g'rimi?\n"
-                    f"• Bot kanalga qo'shilganmi?\n"
-                    f"• Yoki forward qiling"
-                )
+                await msg.edit_text(f"❌ **KANAL TOPILMADI!**\nID: `{chat_id}`")
                 return
             
             is_admin, status = await check_bot_admin(client, chat_id)
             
             if not is_admin:
-                await msg.edit_text(
-                    f"❌ **BOT ADMIN EMAS!**\n\n"
-                    f"📌 Kanal: {chat.title}\n"
-                    f"🆔 ID: `{chat_id}`\n\n"
-                    f"✅ Yechim:\n"
-                    f"1. Kanalga admin qiling\n"
-                    f"2. 'Bloklash' huquqini bering\n"
-                    f"3. ID ni qayta yozing"
-                )
+                await msg.edit_text(f"❌ **BOT ADMIN EMAS!**\n📌 Kanal: {chat.title}\n🆔 ID: `{chat_id}`")
                 return
             
             await add_channel_for_user(client, user_id, chat_id, chat.title)
@@ -564,13 +472,8 @@ async def handle_other_messages(client, message):
             members = chat.members_count if hasattr(chat, 'members_count') else "?"
             
             await msg.edit_text(
-                f"✅ **KANAL QO'SHILDI!**\n\n"
-                f"📌 {chat.title}\n"
-                f"🆔 `{chat_id}`\n"
-                f"👥 A'zolar: {members}\n"
-                f"🤖 Status: {status}\n\n"
-                f"Endi /start ni bosing",
-                reply_markup=get_main_keyboard(True)
+                f"✅ **KANAL QO'SHILDI!**\n\n📌 {chat.title}\n🆔 `{chat_id}`\n👥 A'zolar: {members}\n\nEndi /start ni bosing",
+                reply_markup=get_main_menu_keyboard() if is_owner(user_id) else None
             )
             
         except Exception as e:
@@ -579,8 +482,6 @@ async def handle_other_messages(client, message):
 # ==================== YANGI A'ZO QO'SHILGANDA ====================
 @app.on_chat_member_updated()
 async def on_chat_member_update(client, chat_member_updated):
-    """Kanalga yangi a'zo qo'shilganda habar berish"""
-    
     chat = chat_member_updated.chat
     if chat.type not in [enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP]:
         return
@@ -620,6 +521,11 @@ async def on_chat_member_update(client, chat_member_updated):
     if not channel_owner_id:
         return
     
+    # Monitor holatini tekshirish
+    monitor = all_channels.get(chat.id, {}).get("monitor", True)
+    if not monitor:
+        return  # Monitor o'chirilgan bo'lsa, xabar bermaslik
+    
     user_id = user.id
     username = f"@{user.username}" if user.username else "username yo'q"
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
@@ -640,18 +546,14 @@ async def on_chat_member_update(client, chat_member_updated):
     save_data()
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏱️ 5 minut", callback_data=f"ban_{chat.id}_{user_id}_5m")],
-        [InlineKeyboardButton("⏱️ 10 minut", callback_data=f"ban_{chat.id}_{user_id}_10m")],
-        [InlineKeyboardButton("⏱️ 30 minut", callback_data=f"ban_{chat.id}_{user_id}_30m")],
-        [InlineKeyboardButton("📅 1 kun", callback_data=f"ban_{chat.id}_{user_id}_1k")],
-        [InlineKeyboardButton("📅 5 kun", callback_data=f"ban_{chat.id}_{user_id}_5k")],
-        [InlineKeyboardButton("📅 10 kun", callback_data=f"ban_{chat.id}_{user_id}_10k")],
-        [InlineKeyboardButton("📅 20 kun", callback_data=f"ban_{chat.id}_{user_id}_20k")],
-        [InlineKeyboardButton("📅 30 kun", callback_data=f"ban_{chat.id}_{user_id}_30k")],
-        [InlineKeyboardButton("📅 40 kun", callback_data=f"ban_{chat.id}_{user_id}_40k")],
-        [InlineKeyboardButton("📆 1 oy", callback_data=f"ban_{chat.id}_{user_id}_1oy")],
-        [InlineKeyboardButton("📆 2 oy", callback_data=f"ban_{chat.id}_{user_id}_2oy")],
-        [InlineKeyboardButton("📆 3 oy", callback_data=f"ban_{chat.id}_{user_id}_3oy")],
+        [InlineKeyboardButton("⏱️ 5 minut", callback_data=f"ban_{chat.id}_{user_id}_5m"),
+         InlineKeyboardButton("⏱️ 10 minut", callback_data=f"ban_{chat.id}_{user_id}_10m")],
+        [InlineKeyboardButton("⏱️ 30 minut", callback_data=f"ban_{chat.id}_{user_id}_30m"),
+         InlineKeyboardButton("📅 1 kun", callback_data=f"ban_{chat.id}_{user_id}_1k")],
+        [InlineKeyboardButton("📅 5 kun", callback_data=f"ban_{chat.id}_{user_id}_5k"),
+         InlineKeyboardButton("📅 10 kun", callback_data=f"ban_{chat.id}_{user_id}_10k")],
+        [InlineKeyboardButton("📅 30 kun", callback_data=f"ban_{chat.id}_{user_id}_30k"),
+         InlineKeyboardButton("📆 1 oy", callback_data=f"ban_{chat.id}_{user_id}_1oy")],
         [InlineKeyboardButton("❌ Bloklamaslik", callback_data=f"skip_{chat.id}_{user_id}")]
     ])
     
@@ -659,12 +561,7 @@ async def on_chat_member_update(client, chat_member_updated):
     try:
         await client.send_message(
             channel_owner_id,
-            f"👤 **YANGI A'ZO!**\n\n"
-            f"📌 Kanal: {chat.title}\n"
-            f"👤 {full_name}\n"
-            f"🆔 `{user_id}`\n"
-            f"📱 {username}\n"
-            f"⏰ {format_time(join_time, channel_owner_id)}",
+            f"👤 **YANGI A'ZO!**\n\n📌 Kanal: {chat.title}\n👤 {full_name}\n🆔 `{user_id}`\n📱 {username}\n⏰ {format_time(join_time, channel_owner_id)}",
             reply_markup=keyboard
         )
     except:
@@ -681,7 +578,7 @@ async def allow_user(client, message):
     
     args = message.text.split()
     if len(args) < 2:
-        await message.reply_text("❌ /allow [user_id] - foydalanuvchiga ruxsat berish")
+        await message.reply_text("❌ /allow [user_id]")
         return
     
     try:
@@ -700,11 +597,7 @@ async def allow_user(client, message):
                 await message.reply_text(f"✅ Ruxsat berildi: {name} (`{new_user_id}`)")
                 
                 try:
-                    await client.send_message(
-                        new_user_id,
-                        "✅ **Sizga botdan foydalanish uchun ruxsat berildi!**\n\n"
-                        "🔽 /start ni bosing"
-                    )
+                    await client.send_message(new_user_id, "✅ Sizga ruxsat berildi! /start")
                 except:
                     pass
             except:
@@ -724,7 +617,7 @@ async def disallow_user(client, message):
     
     args = message.text.split()
     if len(args) < 2:
-        await message.reply_text("❌ /disallow [user_id] - ruxsatni bekor qilish")
+        await message.reply_text("❌ /disallow [user_id]")
         return
     
     try:
@@ -759,7 +652,7 @@ async def list_users(client, message):
         await message.reply_text("❌ Sizga ruxsat yo'q!")
         return
     
-    text = "👥 **RUXSATLANGAN FOYDALANUVCHILAR**\n\n"
+    text = "👥 **RUXSATLANGANLAR**\n\n"
     
     for uid in AUTHORIZED_USERS:
         if uid == YOUR_ID:
@@ -767,49 +660,36 @@ async def list_users(client, message):
         try:
             user = await client.get_users(uid)
             name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-            username = f"@{user.username}" if user.username else ""
-            text += f"• {name} {username}\n  ID: `{uid}`\n"
+            text += f"• {name}\n  ID: `{uid}`\n"
             if uid in user_channels:
-                text += f"  📌 Kanal: {user_channels[uid]['title']}\n"
+                text += f"  📌 {user_channels[uid]['title']}\n"
             text += "\n"
         except:
-            text += f"• Noma'lum foydalanuvchi\n  ID: `{uid}`\n\n"
+            text += f"• Noma'lum\n  ID: `{uid}`\n\n"
     
     await message.reply_text(text)
 
-# ==================== VAQT SOZLASH ====================
 @app.on_message(filters.command("settime"))
 async def set_time_command(client, message):
     user_id = message.from_user.id
     
     if not is_authorized(user_id):
-        await message.reply_text("❌ Sizga ruxsat yo'q!")
+        await message.reply_text("❌ Ruxsat yo'q!")
         return
     
     args = message.text.split()
     if len(args) < 2:
         current = time_settings.get(user_id, 5)
-        await message.reply_text(
-            f"🕐 **VAQT SOZLARI**\n\n"
-            f"Hozirgi: UTC+{current}\n"
-            f"Vaqt: {local_time(user_id).strftime('%H:%M %d.%m.%Y')}\n\n"
-            f"O'zgartirish: /settime [farq]\n"
-            f"Misol: /settime 5"
-        )
+        await message.reply_text(f"🕐 Hozirgi: UTC+{current}\nVaqt: {local_time(user_id).strftime('%H:%M %d.%m.%Y')}\n\n/settime [farq]")
         return
     
     try:
         soat_farqi = int(args[1])
         time_settings[user_id] = soat_farqi
         save_data()
-        
-        await message.reply_text(
-            f"✅ **VAQT SOZLANDI!**\n\n"
-            f"🕐 UTC+{soat_farqi}\n"
-            f"📅 Hozir: {local_time(user_id).strftime('%d.%m.%Y %H:%M:%S')}"
-        )
+        await message.reply_text(f"✅ Vaqt sozlandi: UTC+{soat_farqi}")
     except:
-        await message.reply_text("❌ Noto'g'ri format! Masalan: /settime 5")
+        await message.reply_text("❌ Xato! Masalan: /settime 5")
 
 # ==================== CALLBACK HANDLER ====================
 @app.on_callback_query()
@@ -822,111 +702,280 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
     
     data = callback_query.data
     
-    # ===== ASOSIY MENYUGA QAYTISH (USER UCHUN) =====
-    if data == "back_to_user_menu":
-        if user_id in user_channels:
-            channel = user_channels[user_id]
-            text = f"✅ **SIZNING KANALINGIZ**\n\n"
-            text += f"📌 {channel['title']}\n"
-            text += f"🆔 `{channel['chat_id']}`\n\n"
-            text += "Quyidagi tugmalar orqali boshqaring:"
-        else:
-            text = "👋 **XUSH KELIBSIZ!**\n\n"
-            text += "Botdan foydalanish uchun kanalingizni qo'shing:"
+    # ===== BOSH MENYUGA QAYTISH =====
+    if data == "back_to_main":
+        my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
+        total_users = len(AUTHORIZED_USERS) - 1
+        total_channels = len(user_channels)
         
-        await callback_query.message.edit_text(text, reply_markup=get_main_keyboard(user_id in user_channels))
-        await callback_query.answer()
-        return
-    
-    # ===== ADMIN PANELGA QAYTISH =====
-    if data == "back_admin_main":
-        text = f"✅ **ADMIN PANEL**\n\n"
-        text += f"👋 Xush kelibsiz, @maestro_o!\n"
-        text += f"🕐 Vaqt: {local_time(user_id).strftime('%H:%M %d.%m.%Y')}\n\n"
-        text += f"📊 **MA'LUMOT:**\n"
-        text += f"👥 Ruxsatlanganlar: {len(AUTHORIZED_USERS)-1} ta\n"
-        text += f"📌 Faol kanallar: {len(user_channels)} ta\n\n"
+        text = f"👤 **Xush kelibsiz, @maestro_o!**\n\n"
+        text += f"📊 **Statistika:**\n"
+        text += f"• Kanallaringiz: {my_channels} ta\n"
+        text += f"• Ruxsat berganlar: {total_users} ta\n"
+        text += f"• Faol kanallar: {total_channels} ta\n\n"
         text += f"🔽 Quyidagi tugmalardan foydalaning:"
         
-        await callback_query.message.edit_text(text, reply_markup=get_admin_main_keyboard())
+        await callback_query.message.edit_text(text, reply_markup=get_main_menu_keyboard())
         await callback_query.answer()
         return
     
-    # ===== ADMIN: MENING KANALLARIM =====
-    if data == "my_channels":
-        # Siz qo'shgan kanallar (o'zingizning user_id bo'yicha)
-        my_channels_list = []
-        for uid, channel in user_channels.items():
-            if uid == YOUR_ID:  # Sizning ID ingiz bilan qo'shilgan kanallar
-                my_channels_list.append((uid, channel))
+    # ===== BARCHA MA'LUMOTLARNI YANGILASH =====
+    if data == "refresh_all":
+        await callback_query.message.edit_text("🔄 **Barcha ma'lumotlar yangilanmoqda...**")
         
-        if not my_channels_list:
-            text = "📭 **SIZNING KANALLARINGIZ YO'Q**\n\n"
-            text += "Kanallaringizni qo'shish uchun:\n"
-            text += "• Kanal ID sini yozing: `-100123456789`\n"
-            text += "• Yoki kanaldan xabar forward qiling"
-        else:
-            text = "📋 **SIZNING KANALLARINGIZ**\n\n"
-            for uid, channel in my_channels_list:
-                text += f"📌 {channel['title']}\n"
-                text += f"🆔 `{channel['chat_id']}`\n"
+        updated_users = 0
+        for uid in AUTHORIZED_USERS:
+            if uid != YOUR_ID:
+                try:
+                    await client.get_users(uid)
+                    updated_users += 1
+                except:
+                    pass
+        
+        updated_channels = 0
+        for chat_id in list(all_channels.keys()):
+            try:
+                chat = await client.get_chat(chat_id)
+                for uid, ch in user_channels.items():
+                    if ch['chat_id'] == chat_id:
+                        user_channels[uid]['title'] = chat.title
+                        break
+                all_channels[chat_id]['title'] = chat.title
+                updated_channels += 1
+            except:
+                if chat_id in all_channels:
+                    del all_channels[chat_id]
+                for uid, ch in list(user_channels.items()):
+                    if ch['chat_id'] == chat_id:
+                        del user_channels[uid]
+        
+        save_data()
+        
+        my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
+        total_users = len(AUTHORIZED_USERS) - 1
+        total_channels = len(user_channels)
+        
+        text = f"👤 **Xush kelibsiz, @maestro_o!**\n\n"
+        text += f"✅ **Barcha ma'lumotlar yangilandi!**\n"
+        text += f"👥 {updated_users} ta foydalanuvchi\n"
+        text += f"📌 {updated_channels} ta kanal\n\n"
+        text += f"📊 **Statistika:**\n"
+        text += f"• Kanallaringiz: {my_channels} ta\n"
+        text += f"• Ruxsat berganlar: {total_users} ta\n"
+        text += f"• Faol kanallar: {total_channels} ta\n\n"
+        text += f"🔽 Quyidagi tugmalardan foydalaning:"
+        
+        await callback_query.message.edit_text(text, reply_markup=get_main_menu_keyboard())
+        await callback_query.answer("✅ Barcha ma'lumotlar yangilandi!")
+        return
+    
+    # ===== KANALLARIM =====
+    if data == "my_channels_list":
+        await callback_query.message.edit_text("📋 **Kanallaringiz yuklanmoqda...**")
+        
+        my_channels = []
+        for uid, channel in user_channels.items():
+            if uid == YOUR_ID:
+                try:
+                    chat = await client.get_chat(channel['chat_id'])
+                    channel['title'] = chat.title
+                except:
+                    continue
+                my_channels.append(channel)
+        
+        text = "📋 **KANALLARIM**\n\n"
+        
+        if my_channels:
+            for i, channel in enumerate(my_channels, 1):
                 bans = len(scheduled.get(channel['chat_id'], {}))
-                text += f"⏰ Bloklashlar: {bans} ta\n\n"
+                monitor = "🟢" if channel.get('monitor', True) else "🔴"
+                text += f"{i}. {monitor} 📌 {channel['title']}\n"
+                text += f"   🆔 `{channel['chat_id']}`\n"
+                text += f"   ⏰ Bloklashlar: {bans} ta\n\n"
+            
+            keyboard = []
+            for channel in my_channels:
+                monitor_icon = "🟢" if channel.get('monitor', True) else "🔴"
+                btn_text = f"{monitor_icon} {channel['title'][:30]}"
+                keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"my_channel_{channel['chat_id']}")])
+            keyboard.append([InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")])
+            keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")])
+        else:
+            text += "📭 Sizda hali kanal yo'q.\n\nKanal qo'shish uchun pastdagi tugmani bosing:"
+            keyboard = [
+                [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")],
+                [InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]
+            ]
+        
+        await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await callback_query.answer()
+        return
+    
+    # ===== KANAL INFO =====
+    if data.startswith("my_channel_"):
+        chat_id = int(data.split("_")[2])
+        
+        channel_title = "Kanal"
+        monitor_status = True
+        
+        for uid, ch in user_channels.items():
+            if ch['chat_id'] == chat_id:
+                channel_title = ch['title']
+                monitor_status = ch.get('monitor', True)
+                break
+        
+        try:
+            chat = await client.get_chat(chat_id)
+            members = chat.members_count if hasattr(chat, 'members_count') else "?"
+        except:
+            members = "?"
+        
+        bans = len(scheduled.get(chat_id, {}))
+        monitor_icon = "🟢" if monitor_status else "🔴"
+        monitor_text = "Yoqilgan" if monitor_status else "O'chirilgan"
+        
+        text = f"📌 **{channel_title}**\n\n"
+        text += f"🆔 `{chat_id}`\n"
+        text += f"👥 A'zolar: {members}\n"
+        text += f"⏰ Bloklashlar: {bans} ta\n"
+        text += f"📡 Kuzatish: {monitor_icon} {monitor_text}\n\n"
+        
+        if bans > 0:
+            text += "**Oxirgi bloklashlar:**\n"
+            for uid, info in list(scheduled.get(chat_id, {}).items())[:3]:
+                sana = format_time(info["time"], user_id)
+                text += f"• {info['full_name']} - {sana}\n"
+        
+        if monitor_status:
+            monitor_btn = InlineKeyboardButton("🔴 O'chirish", callback_data=f"monitor_off_{chat_id}")
+        else:
+            monitor_btn = InlineKeyboardButton("🟢 Yoqish", callback_data=f"monitor_on_{chat_id}")
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Yangi kanal qo'shish", callback_data="add_channel")],
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")]
+            [InlineKeyboardButton("👥 A'zolar", callback_data=f"view_members_{chat_id}"),
+             InlineKeyboardButton("⏰ Bloklashlar", callback_data=f"view_bans_{chat_id}")],
+            [InlineKeyboardButton("📊 Statistika", callback_data=f"channel_stats_{chat_id}")],
+            [monitor_btn, InlineKeyboardButton("🗑 O'chirish", callback_data=f"delete_channel_{chat_id}")],
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
         ])
         
         await callback_query.message.edit_text(text, reply_markup=keyboard)
         await callback_query.answer()
         return
     
-    # ===== ADMIN: RUXSAT BERISH TUGMASI =====
-    if data == "admin_add_user":
-        temp_data[user_id] = {"action": "awaiting_user_id"}
-        await callback_query.message.edit_text(
-            "➕ **RUXSAT BERISH**\n\n"
-            "Foydalanuvchi ID sini yuboring:\n\n"
-            "Misol: `123456789`\n\n"
-            "ID ni @userinfobot dan olish mumkin.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")]
-            ])
-        )
-        await callback_query.answer()
-        return
-    
-    # ===== ADMIN: RUXSATLANGANLAR =====
-    if data == "admin_users":
-        text = "👥 **RUXSATLANGANLAR**\n\n"
-        if len(AUTHORIZED_USERS) <= 1:
-            text += "Hali hech kimga ruxsat berilmagan."
-        else:
-            for uid in AUTHORIZED_USERS:
-                if uid != YOUR_ID:
-                    try:
-                        user = await client.get_users(uid)
-                        name = user.first_name or "Noma'lum"
-                        text += f"• {name}\n  ID: `{uid}`\n"
-                        if uid in user_channels:
-                            text += f"  📌 {user_channels[uid]['title']}\n"
-                        text += "\n"
-                    except:
-                        text += f"• Noma'lum\n  ID: `{uid}`\n\n"
+    # ===== MONITORNI O'CHIRISH =====
+    if data.startswith("monitor_off_"):
+        chat_id = int(data.split("_")[2])
         
-        await callback_query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")]
-            ])
-        )
+        for uid, ch in user_channels.items():
+            if ch['chat_id'] == chat_id:
+                user_channels[uid]['monitor'] = False
+                break
+        
+        if chat_id in all_channels:
+            all_channels[chat_id]['monitor'] = False
+        
+        save_data()
+        await callback_query.answer("✅ Kuzatish o'chirildi!")
+        
+        # Qayta kanal info ga o'tish
+        await callback_query.message.edit_text("🔄 Yangilanmoqda...")
+        new_data = f"my_channel_{chat_id}"
+        callback_query.data = new_data
+        await handle_callbacks(client, callback_query)
+        return
+    
+    # ===== MONITORNI YOQISH =====
+    if data.startswith("monitor_on_"):
+        chat_id = int(data.split("_")[2])
+        
+        for uid, ch in user_channels.items():
+            if ch['chat_id'] == chat_id:
+                user_channels[uid]['monitor'] = True
+                break
+        
+        if chat_id in all_channels:
+            all_channels[chat_id]['monitor'] = True
+        
+        save_data()
+        await callback_query.answer("✅ Kuzatish yoqildi!")
+        
+        await callback_query.message.edit_text("🔄 Yangilanmoqda...")
+        new_data = f"my_channel_{chat_id}"
+        callback_query.data = new_data
+        await handle_callbacks(client, callback_query)
+        return
+    
+    # ===== KANALNI O'CHIRISH =====
+    if data.startswith("delete_channel_"):
+        chat_id = int(data.split("_")[2])
+        
+        for uid, ch in list(user_channels.items()):
+            if ch['chat_id'] == chat_id:
+                await remove_channel_for_user(client, uid)
+                break
+        
+        await callback_query.answer("✅ Kanal o'chirildi!")
+        
+        # Kanallarim ro'yxatiga qaytish
+        await callback_query.message.edit_text("🔄 Yangilanmoqda...")
+        callback_query.data = "my_channels_list"
+        await handle_callbacks(client, callback_query)
+        return
+    
+    # ===== ADMIN PANEL =====
+    if data == "admin_panel":
+        await callback_query.message.edit_text("👑 **Admin panel yuklanmoqda...**")
+        
+        authorized_list = []
+        for uid in AUTHORIZED_USERS:
+            if uid != YOUR_ID:
+                try:
+                    user = await client.get_users(uid)
+                    name = user.first_name or f"ID:{uid}"
+                    authorized_list.append((uid, name))
+                except:
+                    authorized_list.append((uid, f"Noma'lum"))
+        
+        for uid, _ in authorized_list:
+            if uid in user_channels:
+                try:
+                    chat = await client.get_chat(user_channels[uid]['chat_id'])
+                    user_channels[uid]['title'] = chat.title
+                except:
+                    pass
+        
+        text = "👑 **ADMIN PANEL**\n\n"
+        text += f"👥 Ruxsat berganlar: {len(authorized_list)} ta\n\n"
+        
+        if authorized_list:
+            text += "**Ro'yxat:**\n"
+            for uid, name in authorized_list[:5]:
+                if uid in user_channels:
+                    channel = user_channels[uid]
+                    bans = len(scheduled.get(channel['chat_id'], {}))
+                    monitor = "🟢" if channel.get('monitor', True) else "🔴"
+                    text += f"• {monitor} {name} - 📌 {channel['title'][:20]} ({bans})\n"
+                else:
+                    text += f"• ❌ {name} - Kanalsiz\n"
+            text += "\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("👥 Ruxsat berganlar", callback_data="admin_users_list")],
+            [InlineKeyboardButton("➕ Ruxsat berish", callback_data="admin_add_user")],
+            [InlineKeyboardButton("❌ Ruxsatni bekor qilish", callback_data="admin_remove_user")],
+            [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats")],
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]
+        ]
+        
+        await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         await callback_query.answer()
         return
     
-    # ===== ADMIN: RUXSATNI BEKOR QILISH =====
-    if data == "admin_remove_user":
-        # Ruxsatlanganlar ro'yxatini ko'rsatish
+    # ===== RUXSAT BERGANLAR RO'YXATI =====
+    if data == "admin_users_list":
+        await callback_query.message.edit_text("👥 **Ruxsat berganlar yuklanmoqda...**")
+        
         users_list = []
         for uid in AUTHORIZED_USERS:
             if uid != YOUR_ID:
@@ -935,14 +984,122 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
                     name = user.first_name or f"ID:{uid}"
                     users_list.append((uid, name))
                 except:
-                    users_list.append((uid, f"Noma'lum ({uid})"))
+                    users_list.append((uid, f"Noma'lum"))
+        
+        for uid, _ in users_list:
+            if uid in user_channels:
+                try:
+                    chat = await client.get_chat(user_channels[uid]['chat_id'])
+                    user_channels[uid]['title'] = chat.title
+                except:
+                    pass
+        
+        if not users_list:
+            text = "📭 **RUXSAT BERGANLAR YO'Q**\n\nHali hech kimga ruxsat bermagansiz."
+            keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_panel")]]
+        else:
+            text = "👥 **RUXSAT BERGANLAR**\n\n"
+            keyboard = []
+            
+            for uid, name in users_list:
+                if uid in user_channels:
+                    channel = user_channels[uid]
+                    bans = len(scheduled.get(channel['chat_id'], {}))
+                    monitor = "🟢" if channel.get('monitor', True) else "🔴"
+                    btn_text = f"{monitor} {name} - {channel['title'][:15]} ({bans})"
+                else:
+                    btn_text = f"❌ {name} - Kanalsiz"
+                keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"user_channel_{uid}")])
+            
+            keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="admin_panel")])
+        
+        await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await callback_query.answer()
+        return
+    
+    # ===== FOYDALANUVCHI KANALI =====
+    if data.startswith("user_channel_"):
+        target_user_id = int(data.split("_")[2])
+        
+        await callback_query.message.edit_text("👤 **Foydalanuvchi kanali yuklanmoqda...**")
+        
+        if target_user_id not in user_channels:
+            await callback_query.message.edit_text(
+                "❌ Bu foydalanuvchi kanal qo'shmagan!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_users_list")]])
+            )
+            await callback_query.answer()
+            return
+        
+        chat_id = user_channels[target_user_id]["chat_id"]
+        channel_title = user_channels[target_user_id]["title"]
+        monitor = user_channels[target_user_id].get('monitor', True)
+        
+        try:
+            chat = await client.get_chat(chat_id)
+            channel_title = chat.title
+            user_channels[target_user_id]['title'] = chat.title
+            members = chat.members_count if hasattr(chat, 'members_count') else "?"
+        except:
+            members = "?"
+        
+        try:
+            user = await client.get_users(target_user_id)
+            user_name = user.first_name or "Foydalanuvchi"
+        except:
+            user_name = "Noma'lum"
+        
+        bans = len(scheduled.get(chat_id, {}))
+        monitor_icon = "🟢" if monitor else "🔴"
+        
+        text = f"👤 **{user_name} ning kanali**\n\n"
+        text += f"{monitor_icon} 📌 {channel_title}\n"
+        text += f"🆔 `{chat_id}`\n"
+        text += f"👥 A'zolar: {members}\n"
+        text += f"⏰ Bloklashlar: {bans} ta\n\n"
+        
+        if bans > 0:
+            text += "**Oxirgi bloklashlar:**\n"
+            for uid, info in list(scheduled.get(chat_id, {}).items())[:3]:
+                sana = format_time(info["time"], user_id)
+                text += f"• {info['full_name']} - {sana}\n"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 A'zolar", callback_data=f"view_members_{chat_id}"),
+             InlineKeyboardButton("⏰ Bloklashlar", callback_data=f"view_bans_{chat_id}")],
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="admin_users_list")]
+        ])
+        
+        await callback_query.message.edit_text(text, reply_markup=keyboard)
+        await callback_query.answer()
+        return
+    
+    # ===== ADMIN: RUXSAT BERISH =====
+    if data == "admin_add_user":
+        temp_data[user_id] = {"action": "awaiting_user_id"}
+        await callback_query.message.edit_text(
+            "➕ **RUXSAT BERISH**\n\nFoydalanuvchi ID sini yuboring:\nMisol: `123456789`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_panel")]])
+        )
+        await callback_query.answer()
+        return
+    
+    # ===== ADMIN: RUXSATNI BEKOR QILISH =====
+    if data == "admin_remove_user":
+        users_list = []
+        for uid in AUTHORIZED_USERS:
+            if uid != YOUR_ID:
+                try:
+                    user = await client.get_users(uid)
+                    name = user.first_name or f"ID:{uid}"
+                    users_list.append((uid, name))
+                except:
+                    users_list.append((uid, f"Noma'lum"))
         
         if not users_list:
             await callback_query.message.edit_text(
-                "📭 **RUXSATLANGANLAR YO'Q**\n\nHali hech kimga ruxsat bermagansiz.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")]
-                ])
+                "📭 **RUXSATLANGANLAR YO'Q**",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_panel")]])
             )
             await callback_query.answer()
             return
@@ -950,11 +1107,11 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         text = "👥 **RUXSATLANGANLAR**\n\nBekor qilmoqchi bo'lgan foydalanuvchini tanlang:\n\n"
         keyboard = []
         
-        for uid, name in users_list[:10]:
+        for uid, name in users_list:
             btn_text = f"❌ {name[:20]}"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"confirm_remove_{uid}")])
         
-        keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")])
+        keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="admin_panel")])
         
         await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         await callback_query.answer()
@@ -971,15 +1128,12 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             user_name = "Noma'lum"
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Ha, bekor qilish", callback_data=f"execute_remove_{remove_user_id}")],
-            [InlineKeyboardButton("❌ Yo'q", callback_data="admin_remove_user")]
+            [InlineKeyboardButton("✅ Ha", callback_data=f"execute_remove_{remove_user_id}"),
+             InlineKeyboardButton("❌ Yo'q", callback_data="admin_remove_user")]
         ])
         
         await callback_query.message.edit_text(
-            f"❓ **RUXSATNI BEKOR QILISH**\n\n"
-            f"👤 Foydalanuvchi: {user_name}\n"
-            f"🆔 ID: `{remove_user_id}`\n\n"
-            f"Ruxsatni bekor qilishni tasdiqlaysizmi?",
+            f"❓ **RUXSATNI BEKOR QILISH**\n\n👤 {user_name}\n🆔 `{remove_user_id}`\n\nTasdiqlaysizmi?",
             reply_markup=keyboard
         )
         await callback_query.answer()
@@ -992,7 +1146,6 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         if remove_user_id in AUTHORIZED_USERS and remove_user_id != YOUR_ID:
             AUTHORIZED_USERS.remove(remove_user_id)
             
-            # Foydalanuvchi kanalini o'chirish
             if remove_user_id in user_channels:
                 chat_id = user_channels[remove_user_id]["chat_id"]
                 if chat_id in all_channels:
@@ -1004,19 +1157,13 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
             save_data()
             
             await callback_query.message.edit_text(
-                f"✅ **RUXSAT BEKOR QILINDI!**\n\n"
-                f"🆔 ID: `{remove_user_id}`\n\n"
-                f"Foydalanuvchi endi botdan foydalana olmaydi.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Admin panel", callback_data="back_admin_main")]
-                ])
+                f"✅ **RUXSAT BEKOR QILINDI!**\n🆔 `{remove_user_id}`",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin panel", callback_data="admin_panel")]])
             )
         else:
             await callback_query.message.edit_text(
-                "❌ **XATOLIK!**\n\nFoydalanuvchi topilmadi.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")]
-                ])
+                "❌ **XATOLIK!**",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_panel")]])
             )
         await callback_query.answer()
         return
@@ -1028,7 +1175,7 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         total_history = sum(len(users) for users in user_history.values())
         
         text = f"📊 **STATISTIKA**\n\n"
-        text += f"👥 Ruxsatlanganlar: {len(AUTHORIZED_USERS)-1} ta\n"
+        text += f"👥 Ruxsat berganlar: {len(AUTHORIZED_USERS)-1} ta\n"
         text += f"📌 Faol kanallar: {total_channels} ta\n"
         text += f"⏰ Bloklashlar: {total_bans} ta\n"
         text += f"📋 Tarix: {total_history} ta\n"
@@ -1037,122 +1184,125 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Yangilash", callback_data="admin_stats")],
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")]
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="admin_panel")]
         ])
         
         await callback_query.message.edit_text(text, reply_markup=keyboard)
         await callback_query.answer()
         return
     
-    # ===== ADMIN YORDAM =====
-    if data == "admin_help":
-        text = "❓ **ADMIN YORDAM**\n\n"
+    # ===== MY STATISTIKA =====
+    if data == "my_stats":
+        my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
+        my_bans = 0
+        for uid, ch in user_channels.items():
+            if uid == YOUR_ID:
+                my_bans += len(scheduled.get(ch['chat_id'], {}))
+        
+        text = f"📊 **SHAXSIY STATISTIKA**\n\n"
+        text += f"📋 Kanallaringiz: {my_channels} ta\n"
+        text += f"⏰ Bloklashlaringiz: {my_bans} ta\n\n"
+        text += f"🕐 {local_time(user_id).strftime('%H:%M %d.%m.%Y')}"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]
+        ])
+        
+        await callback_query.message.edit_text(text, reply_markup=keyboard)
+        await callback_query.answer()
+        return
+    
+    # ===== YORDAM =====
+    if data == "help":
+        text = "❓ **YORDAM**\n\n"
         text += "📌 **Komandalar:**\n"
         text += "• /allow [id] - ruxsat berish\n"
         text += "• /disallow [id] - ruxsatni bekor qilish\n"
-        text += "• /users - foydalanuvchilar ro'yxati\n"
+        text += "• /users - ruxsatlanganlar\n"
         text += "• /settime [farq] - vaqt sozlash\n\n"
         text += "📌 **Tugmalar:**\n"
-        text += "• 📋 Mening kanallarim - sizning kanallaringiz\n"
-        text += "• 👥 Ruxsatlanganlar - ro'yxat\n"
-        text += "• ➕ Ruxsat berish - ID orqali\n"
-        text += "• ❌ Ruxsatni bekor qilish\n"
-        text += "• 📊 Statistika - umumiy ma'lumot\n"
+        text += "• 📋 Kanallarim - kanallaringiz\n"
+        text += "• 👑 Admin panel - ruxsat berganlar\n"
+        text += "• 🔄 Yangilash - ma'lumotlarni yangilash"
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="back_admin_main")]
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]
         ])
         
         await callback_query.message.edit_text(text, reply_markup=keyboard)
         await callback_query.answer()
         return
     
-    # ===== USER FUNKSIYALARI =====
-    if data == "add_channel":
-        await callback_query.message.edit_text(
-            "➕ **KANAL QO'SHISH**\n\n"
-            "Ikkita usul:\n\n"
-            "1. Kanal ID sini yozing:\n"
-            "`-100123456789`\n\n"
-            "2. Kanaldan xabar forward qiling",
-            reply_markup=get_back_keyboard("user_menu")
-        )
-        await callback_query.answer()
-        return
-    
-    if data == "change_channel":
-        await callback_query.message.edit_text(
-            "🔄 **KANALNI ALMASHTIRISH**\n\n"
-            "Yangi kanal ID sini yozing yoki forward qiling.\n\n"
-            "Eski kanal avtomatik o'chadi.",
-            reply_markup=get_back_keyboard("user_menu")
-        )
-        await callback_query.answer()
-        return
-    
-    if data == "delete_channel_confirm":
+    # ===== VAQT SOZLASH =====
+    if data == "menu_time":
+        current = time_settings.get(user_id, 5)
+        text = f"🕐 **VAQT SOZLASH**\n\nHozirgi: UTC+{current}\nVaqt: {local_time(user_id).strftime('%H:%M %d.%m.%Y')}"
+        
+        back_button = "back_to_main" if is_owner(user_id) else "back_to_user_menu"
+        
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Ha, o'chirish", callback_data="delete_channel_yes")],
-            [InlineKeyboardButton("❌ Yo'q, bekor qilish", callback_data="back_to_user_menu")]
+            [InlineKeyboardButton("UTC+0", callback_data="settime_0"),
+             InlineKeyboardButton("UTC+3", callback_data="settime_3")],
+            [InlineKeyboardButton("UTC+5", callback_data="settime_5"),
+             InlineKeyboardButton("UTC+6", callback_data="settime_6")],
+            [InlineKeyboardButton("🔙 Orqaga", callback_data=back_button)]
         ])
+        await callback_query.message.edit_text(text, reply_markup=keyboard)
+        await callback_query.answer()
+        return
+    
+    if data.startswith("settime_"):
+        soat = int(data.split("_")[1])
+        time_settings[user_id] = soat
+        save_data()
+        await callback_query.answer(f"✅ Vaqt UTC+{soat} qilib sozlandi")
+        
+        back_button = "back_to_main" if is_owner(user_id) else "back_to_user_menu"
+        
         await callback_query.message.edit_text(
-            "🗑 **KANALNI O'CHIRISH**\n\n"
-            "Kanalni botdan o'chirmoqchimisiz?\n\n"
-            "⚠️ **Diqqat!** Kanal o'chirilsa:\n"
-            "• Barcha bloklashlar o'chadi\n"
-            "• Tarix saqlanmaydi\n"
-            "• Qayta qo'shish kerak bo'ladi",
-            reply_markup=keyboard
+            f"✅ **VAQT SOZLANDI!**\n\n🕐 UTC+{soat}\n📅 {local_time(user_id).strftime('%d.%m.%Y %H:%M:%S')}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data=back_button)]])
         )
-        await callback_query.answer()
         return
     
-    if data == "delete_channel_yes":
-        success, chat_id = await remove_channel_for_user(client, user_id)
-        if success:
-            await callback_query.message.edit_text(
-                "✅ **KANAL O'CHIRILDI!**\n\n"
-                "Kanal muvaffaqiyatli o'chirildi.\n\n"
-                "Endi /start orqali yangi kanal qo'shishingiz mumkin.",
-                reply_markup=get_main_keyboard(False)
-            )
-        else:
-            await callback_query.message.edit_text(
-                "❌ **XATOLIK!**\n\n"
-                "Kanal o'chirilmadi. Qaytadan urinib ko'ring.",
-                reply_markup=get_back_keyboard("user_menu")
-            )
-        await callback_query.answer()
-        return
-    
+    # ===== A'ZOLAR =====
     if data == "members":
         if user_id not in user_channels:
             await callback_query.answer("Avval kanal qo'shing!", show_alert=True)
             return
         
         chat_id = user_channels[user_id]["chat_id"]
-        temp_data[user_id] = {"action": "members", "chat_id": chat_id}
         
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👥 Barcha a'zolar", callback_data="members_all")],
-            [InlineKeyboardButton("📱 Username borlar", callback_data="members_with_username")],
-            [InlineKeyboardButton("❌ Username yo'qlar", callback_data="members_without_username")],
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_user_menu")]
-        ])
-        
-        await callback_query.message.edit_text(
-            f"👥 **A'ZOLAR**\n\n"
-            f"📌 {user_channels[user_id]['title']}\n\n"
-            f"Qanday a'zolarni ko'rmoqchisiz?",
-            reply_markup=keyboard
-        )
-        await callback_query.answer()
+        try:
+            members_with_username = []
+            members_without_username = []
+            
+            async for member in client.get_chat_members(chat_id):
+                user = member.user
+                if not user.is_bot:
+                    if user.username:
+                        members_with_username.append(user)
+                    else:
+                        members_without_username.append(user)
+            
+            text = f"👥 **A'ZOLAR**\n📌 {user_channels[user_id]['title']}\n\n"
+            text += f"📊 Jami: {len(members_with_username) + len(members_without_username)} ta\n"
+            text += f"📱 Username bor: {len(members_with_username)}\n"
+            text += f"❌ Username yo'q: {len(members_without_username)}\n\n"
+            
+            if members_with_username:
+                text += "**📱 Username borlar (10 tasi):**\n"
+                for i, user in enumerate(members_with_username[:10]):
+                    text += f"{i+1}. @{user.username} - {user.first_name or ''}\n"
+            
+            await callback_query.message.edit_text(text, reply_markup=get_back_keyboard("user_menu"))
+            await callback_query.answer()
+            
+        except Exception as e:
+            await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
         return
     
-    if data.startswith("members_"):
-        await handle_members_submenu(client, callback_query)
-        return
-    
+    # ===== BLOKLASHLAR =====
     if data == "bans":
         if user_id not in user_channels:
             await callback_query.answer("Avval kanal qo'shing!", show_alert=True)
@@ -1182,6 +1332,7 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         await callback_query.answer()
         return
     
+    # ===== STATISTIKA (USER) =====
     if data == "stats":
         if user_id not in user_channels:
             await callback_query.answer("Avval kanal qo'shing!", show_alert=True)
@@ -1203,221 +1354,184 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         await callback_query.answer()
         return
     
-    if data == "menu_time":
-        current = time_settings.get(user_id, 5)
-        text = f"🕐 **VAQT SOZLASH**\n\nHozirgi: UTC+{current}\nVaqt: {local_time(user_id).strftime('%H:%M %d.%m.%Y')}"
-        
-        if is_owner(user_id):
-            back_button = "back_admin_main"
-        else:
-            back_button = "back_to_user_menu"
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("UTC+0", callback_data="settime_0"),
-             InlineKeyboardButton("UTC+3", callback_data="settime_3")],
-            [InlineKeyboardButton("UTC+5", callback_data="settime_5"),
-             InlineKeyboardButton("UTC+6", callback_data="settime_6")],
-            [InlineKeyboardButton("🔙 Orqaga", callback_data=back_button)]
-        ])
-        await callback_query.message.edit_text(text, reply_markup=keyboard)
+    # ===== KANAL QO'SHISH =====
+    if data == "add_channel":
+        await callback_query.message.edit_text(
+            "➕ **KANAL QO'SHISH**\n\n"
+            "1. Kanal ID sini yozing: `-100123456789`\n"
+            "2. Kanaldan xabar forward qiling",
+            reply_markup=get_back_keyboard("main")
+        )
         await callback_query.answer()
         return
     
-    if data.startswith("settime_"):
-        soat = int(data.split("_")[1])
-        time_settings[user_id] = soat
-        save_data()
-        await callback_query.answer(f"✅ Vaqt UTC+{soat} qilib sozlandi")
-        
-        if is_owner(user_id):
-            back_button = "back_admin_main"
-        else:
-            back_button = "back_to_user_menu"
-        
+    # ===== KANALNI ALMASHTIRISH =====
+    if data == "change_channel":
         await callback_query.message.edit_text(
-            f"✅ **VAQT SOZLANDI!**\n\n🕐 UTC+{soat}\n📅 {local_time(user_id).strftime('%d.%m.%Y %H:%M:%S')}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Orqaga", callback_data=back_button)]
-            ])
+            "🔄 **KANALNI ALMASHTIRISH**\n\nYangi kanal ID sini yozing yoki forward qiling.",
+            reply_markup=get_back_keyboard("user_menu")
         )
+        await callback_query.answer()
         return
     
-    if data.startswith("ban_"):
-        await handle_ban_callback(client, callback_query)
+    # ===== KANALNI O'CHIRISH TASDIQLASH =====
+    if data == "delete_channel_confirm":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Ha", callback_data="delete_channel_yes"),
+             InlineKeyboardButton("❌ Yo'q", callback_data="back_to_user_menu")]
+        ])
+        await callback_query.message.edit_text(
+            "🗑 **KANALNI O'CHIRISH**\n\nKanalni botdan o'chirmoqchimisiz?",
+            reply_markup=keyboard
+        )
+        await callback_query.answer()
         return
     
-    if data.startswith("skip_"):
-        await handle_skip_callback(client, callback_query)
+    # ===== KANALNI O'CHIRISH =====
+    if data == "delete_channel_yes":
+        success, chat_id = await remove_channel_for_user(client, user_id)
+        if success:
+            await callback_query.message.edit_text(
+                "✅ **KANAL O'CHIRILDI!**",
+                reply_markup=get_main_menu_keyboard() if is_owner(user_id) else None
+            )
+        else:
+            await callback_query.message.edit_text(
+                "❌ **XATOLIK!**",
+                reply_markup=get_back_keyboard("user_menu")
+            )
+        await callback_query.answer()
         return
-
-async def handle_members_submenu(client, callback_query):
-    """A'zolar submenyusini boshqarish"""
-    user_id = callback_query.from_user.id
-    data = callback_query.data
     
-    if user_id not in user_channels:
-        await callback_query.answer("Kanal topilmadi!", show_alert=True)
-        return
-    
-    chat_id = user_channels[user_id]["chat_id"]
-    
-    try:
-        await callback_query.message.edit_text("⏳ Yuklanmoqda...")
+    # ===== A'ZOLAR VA BLOKLASHLAR UCHUN VIEW FUNKSIYALARI =====
+    if data.startswith("view_members_"):
+        chat_id = int(data.split("_")[2])
+        await callback_query.message.edit_text("👥 **A'zolar yuklanmoqda...**")
         
-        members_with_username = []
-        members_without_username = []
-        
-        async for member in client.get_chat_members(chat_id):
-            user = member.user
-            if not user.is_bot:
-                info = {
-                    "id": user.id,
-                    "name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
-                    "username": user.username
-                }
-                if user.username:
-                    members_with_username.append(info)
-                else:
-                    members_without_username.append(info)
-        
-        if data == "members_all":
-            text = f"👥 **BARCHA A'ZOLAR**\n📌 {user_channels[user_id]['title']}\n\n"
-            text += f"📊 Jami: {len(members_with_username) + len(members_without_username)} ta\n\n"
+        try:
+            members_text = "👥 **A'ZOLAR**\n\n"
+            count = 0
+            async for member in client.get_chat_members(chat_id):
+                if count < 50:
+                    user = member.user
+                    if user.username:
+                        members_text += f"• @{user.username}\n"
+                    else:
+                        members_text += f"• {user.first_name or ''}\n"
+                    count += 1
+            members_text += f"\n📊 Jami: {count}+ ta"
             
-            for i, user in enumerate((members_with_username + members_without_username)[:30]):
-                if user['username']:
-                    text += f"{i+1}. @{user['username']}\n   {user['name']}\n"
-                else:
-                    text += f"{i+1}. {user['name']}\n"
-                text += f"   ID: `{user['id']}`\n\n"
+            await callback_query.message.edit_text(
+                members_text,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]])
+            )
+            await callback_query.answer()
+        except Exception as e:
+            await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
+        return
+    
+    if data.startswith("view_bans_"):
+        chat_id = int(data.split("_")[2])
         
-        elif data == "members_with_username":
-            text = f"📱 **USERNAME BORLAR** ({len(members_with_username)})\n"
-            text += f"📌 {user_channels[user_id]['title']}\n\n"
-            
-            for i, user in enumerate(members_with_username[:30]):
-                text += f"{i+1}. @{user['username']}\n   {user['name']}\n   ID: `{user['id']}`\n\n"
-        
-        elif data == "members_without_username":
-            text = f"❌ **USERNAME YO'QLAR** ({len(members_without_username)})\n"
-            text += f"📌 {user_channels[user_id]['title']}\n\n"
-            
-            for i, user in enumerate(members_without_username[:30]):
-                text += f"{i+1}. {user['name']}\n   ID: `{user['id']}`\n\n"
+        if chat_id in scheduled and scheduled[chat_id]:
+            text = "⏰ **BLOKLASHLAR**\n\n"
+            for uid, info in scheduled[chat_id].items():
+                sana = format_time(info["time"], user_id)
+                text += f"• {info['full_name']} - {sana}\n"
+        else:
+            text = "📭 **BLOKLASHLAR YO'Q**"
         
         await callback_query.message.edit_text(
             text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Orqaga", callback_data="members")]
-            ])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]])
         )
         await callback_query.answer()
+        return
+    
+    if data.startswith("channel_stats_"):
+        chat_id = int(data.split("_")[2])
+        bans = len(scheduled.get(chat_id, {}))
+        history = len(user_history.get(chat_id, {}))
         
-    except Exception as e:
-        await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
-
-async def handle_ban_callback(client, callback_query):
-    """Bloklash tugmasi bosilganda"""
-    data = callback_query.data
-    parts = data.split('_')
-    user_id = callback_query.from_user.id
-    
-    if len(parts) >= 4:
-        chat_id = int(parts[1])
-        target_user_id = int(parts[2])
-        time_str = parts[3]
-    else:
-        await callback_query.answer("Noto'g'ri format!")
+        text = f"📊 **KANAL STATISTIKASI**\n\n"
+        text += f"⏰ Bloklashlar: {bans} ta\n"
+        text += f"📋 Tarix: {history} ta"
+        
+        await callback_query.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]])
+        )
+        await callback_query.answer()
         return
     
-    if not can_access_channel(user_id, chat_id):
-        await callback_query.answer("Bu kanalga ruxsat yo'q!")
+    # ===== BAN CALLBACKLARI =====
+    if data.startswith("ban_"):
+        parts = data.split('_')
+        if len(parts) >= 4:
+            chat_id = int(parts[1])
+            target_user_id = int(parts[2])
+            time_str = parts[3]
+        else:
+            await callback_query.answer("Noto'g'ri format!")
+            return
+        
+        if not can_access_channel(user_id, chat_id):
+            await callback_query.answer("Bu kanalga ruxsat yo'q!")
+            return
+        
+        try:
+            user = await client.get_users(target_user_id)
+            username = f"@{user.username}" if user.username else "username yo'q"
+            full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        except:
+            username = "noma'lum"
+            full_name = "noma'lum"
+        
+        minutes = parse_time(time_str)
+        ban_time = datetime.utcnow() + timedelta(minutes=minutes)
+        
+        if chat_id not in scheduled:
+            scheduled[chat_id] = {}
+        
+        scheduled[chat_id][target_user_id] = {
+            "username": username,
+            "full_name": full_name,
+            "time": ban_time,
+            "user_id": target_user_id,
+            "join_time": user_history.get(chat_id, {}).get(target_user_id, {}).get("join_time", datetime.utcnow()),
+            "permanent": True,
+            "chat_id": chat_id
+        }
+        
+        save_data()
+        
+        sana = format_time(ban_time, user_id)
+        
+        await callback_query.message.edit_text(
+            f"✅ **BLOKLASH REJALASHTIRILDI!**\n\n👤 {full_name}\n🆔 `{target_user_id}`\n⏰ {time_str}\n📅 {sana}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="bans")]])
+        )
+        await callback_query.answer("✅ Rejalashtirildi!")
         return
     
-    try:
-        user = await client.get_users(target_user_id)
-        username = f"@{user.username}" if user.username else "username yo'q"
-        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    except:
-        username = "noma'lum"
-        full_name = "noma'lum"
-    
-    minutes = parse_time(time_str)
-    ban_time = datetime.utcnow() + timedelta(minutes=minutes)
-    
-    if chat_id not in scheduled:
-        scheduled[chat_id] = {}
-    
-    scheduled[chat_id][target_user_id] = {
-        "username": username,
-        "full_name": full_name,
-        "time": ban_time,
-        "user_id": target_user_id,
-        "join_time": user_history.get(chat_id, {}).get(target_user_id, {}).get("join_time", datetime.utcnow()),
-        "permanent": True,
-        "chat_id": chat_id
-    }
-    
-    save_data()
-    
-    sana = format_time(ban_time, user_id)
-    qoshilgan = format_time(
-        user_history.get(chat_id, {}).get(target_user_id, {}).get("join_time", datetime.utcnow()),
-        user_id
-    )
-    
-    channel_title = user_channels.get(get_channel_owner(chat_id), {}).get("title", "Kanal")
-    
-    await callback_query.message.edit_text(
-        f"✅ **BLOKLASH REJALASHTIRILDI!**\n\n"
-        f"📌 {channel_title}\n"
-        f"👤 {full_name}\n"
-        f"🆔 `{target_user_id}`\n"
-        f"📱 {username}\n"
-        f"📅 Qo'shilgan: {qoshilgan}\n"
-        f"⏰ Vaqt: {time_str}\n"
-        f"📅 Sana: {sana}",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="bans")]
-        ])
-    )
-    await callback_query.answer("✅ Rejalashtirildi!")
-
-async def handle_skip_callback(client, callback_query):
-    """Skip tugmasi bosilganda"""
-    data = callback_query.data
-    parts = data.split('_')
-    user_id = callback_query.from_user.id
-    
-    if len(parts) >= 3:
-        chat_id = int(parts[1])
-        target_user_id = int(parts[2])
-    else:
-        await callback_query.answer("Noto'g'ri format!")
+    if data.startswith("skip_"):
+        parts = data.split('_')
+        if len(parts) >= 3:
+            chat_id = int(parts[1])
+            target_user_id = int(parts[2])
+        else:
+            await callback_query.answer("Noto'g'ri format!")
+            return
+        
+        await callback_query.message.edit_text(
+            f"❌ **BLOKLASH BEKOR QILINDI**\n\n👤 `{target_user_id}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="bans")]])
+        )
+        await callback_query.answer("❌ Bekor qilindi")
         return
-    
-    if not can_access_channel(user_id, chat_id):
-        await callback_query.answer("Bu kanalga ruxsat yo'q!")
-        return
-    
-    full_name = user_history.get(chat_id, {}).get(target_user_id, {}).get("full_name", "noma'lum")
-    username = user_history.get(chat_id, {}).get(target_user_id, {}).get("username", "noma'lum")
-    
-    await callback_query.message.edit_text(
-        f"❌ **BLOKLASH BEKOR QILINDI**\n\n"
-        f"👤 {full_name}\n"
-        f"🆔 `{target_user_id}`\n"
-        f"📱 {username}\n\n"
-        f"✅ Hech qanday bloklash rejalashtirilmadi",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="bans")]
-        ])
-    )
-    await callback_query.answer("❌ Bekor qilindi")
 
 # ==================== VAQTLI BLOKLASH TEKSHIRUVI ====================
 async def check_bans():
-    """Bloklash vaqtini tekshirish"""
     while True:
         try:
             now = datetime.utcnow()
@@ -1449,13 +1563,7 @@ async def check_bans():
                                 try:
                                     await app.send_message(
                                         owner_id,
-                                        f"🚫 **BLOKLANDI!**\n\n"
-                                        f"👤 {data['full_name']}\n"
-                                        f"🆔 `{user_id}`\n"
-                                        f"📱 {data['username']}\n"
-                                        f"📅 Qo'shilgan: {join_str}\n"
-                                        f"📅 Bloklangan: {ban_str}\n"
-                                        f"⏱️ Kanalda: {time_text}"
+                                        f"🚫 **BLOKLANDI!**\n\n👤 {data['full_name']}\n🆔 `{user_id}`\n📅 Qo'shilgan: {join_str}\n📅 Bloklangan: {ban_str}\n⏱️ Kanalda: {time_text}"
                                     )
                                 except:
                                     pass
@@ -1471,7 +1579,6 @@ async def check_bans():
 
 # ==================== BOTNI ISHGA TUSHIRISH ====================
 def run_ban_check():
-    """Bloklash tekshiruvini alohida threadda ishga tushirish"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(check_bans())
@@ -1482,19 +1589,15 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"🤖 Bot: @uzdramadubbot")
     print(f"👑 Admin: @maestro_o (ID: {YOUR_ID})")
-    print(f"👥 Ruxsatlanganlar: {len(AUTHORIZED_USERS)-1} ta")
     print("=" * 60)
     print("📋 **XUSUSIYATLAR:**")
-    print("   • 👤 Ruxsatsiz: ID chiqadi")
-    print("   • 👥 Ruxsatli: kanal qo'shish")
-    print("   • 👑 Admin: panel + barcha imkoniyatlar")
-    print("   • 📋 Mening kanallarim - siz uchun")
-    print("   • 🔙 Orqaga tugmalari")
+    print("   • 📋 Kanallarim - monitoring bilan")
+    print("   • 👑 Admin panel - ruxsat berganlar")
+    print("   • 🔄 Yangilash - barcha ma'lumotlar")
+    print("   • 🟢/🔴 Monitor yoqish/o'chirish")
     print("=" * 60)
     
-    # Bloklash tekshiruvini alohida threadda ishga tushirish
     ban_thread = threading.Thread(target=run_ban_check, daemon=True)
     ban_thread.start()
     
-    # Botni ishga tushirish
     app.run()
