@@ -199,16 +199,13 @@ def parse_time(time_str):
 
 # ==================== BOT ADMINLIGINI TEKSHIRISH ====================
 async def check_bot_admin(client, chat_id):
-    """Bot adminligini tekshirish - KENGAYTIRILGAN VERSIYA"""
     me = await client.get_me()
     
     try:
-        # 1-usul: To'g'ridan-to'g'ri get_chat_member
         member = await client.get_chat_member(chat_id, me.id)
         print(f"🔍 Bot status: {member.status}")
         
         if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
-            # Bloklash huquqini tekshirish
             if hasattr(member, 'privileges') and member.privileges:
                 if member.privileges.can_restrict_members:
                     print(f"✅ Bloklash huquqi bor")
@@ -217,22 +214,20 @@ async def check_bot_admin(client, chat_id):
                     print(f"❌ Bloklash huquqi yo'q")
                     return False, "Bloklash huquqi yo'q"
             else:
-                # Eski versiyalarda privileges bo'lmasa, True qaytaramiz
-                print(f"✅ Admin (huquqlar tekshirilmadi)")
+                print(f"✅ Admin")
                 return True, member.status
     except Exception as e:
-        print(f"❌ 1-usul xato: {e}")
+        print(f"❌ Xato: {e}")
     
     try:
-        # 2-usul: Adminlar ro'yxatidan qidirish
         async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
             if member.user.id == me.id:
-                print(f"✅ Adminlar ro'yxatida topildi: {member.status}")
+                print(f"✅ Adminlar ro'yxatida topildi")
                 return True, member.status
-    except Exception as e:
-        print(f"❌ 2-usul xato: {e}")
+    except:
+        pass
     
-    print(f"❌ Bot admin emas! Chat ID: {chat_id}")
+    print(f"❌ Bot admin emas!")
     return False, None
 
 # ==================== KANAL QO'SHISH ====================
@@ -347,12 +342,9 @@ async def start_command(client, message):
 # ==================== KANALDA @uzdramadubbot YOZILSA ====================
 @app.on_message(filters.text & filters.regex(r"^@uzdramadubbot$") & filters.channel)
 async def bot_mention_channel(client, message):
-    """Kanalda @uzdramadubbot yozilsa javob berish"""
-    
     chat = message.chat
     print(f"🔍 Kanalda @uzdramadubbot yozildi: {chat.title} ({chat.id})")
     
-    # Bot adminligini tekshirish
     is_admin, status = await check_bot_admin(client, chat.id)
     
     if is_admin:
@@ -406,7 +398,6 @@ async def test_add_channel(client, message):
         chat_id = int(args[1])
         msg = await message.reply_text("⏳ Tekshirilmoqda...")
         
-        # Kanal ma'lumotini olish
         try:
             chat = await client.get_chat(chat_id)
             await msg.edit_text(f"✅ Kanal topildi: {chat.title}")
@@ -414,12 +405,10 @@ async def test_add_channel(client, message):
             await msg.edit_text(f"❌ Kanal topilmadi: {e}")
             return
         
-        # Bot adminligini tekshirish
         is_admin, status = await check_bot_admin(client, chat_id)
         if is_admin:
             await msg.edit_text(f"✅ Bot admin! Status: {status}")
             
-            # Kanalni qo'shish
             success = await add_channel_for_user(client, user_id, chat_id, chat.title)
             if success:
                 await msg.edit_text(
@@ -821,6 +810,20 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
     
     data = callback_query.data
     
+    # ===== KANAL QO'SHISH =====
+    if data == "add_channel":
+        await callback_query.message.edit_text(
+            "➕ **KANAL QO'SHISH**\n\n"
+            "Ikkita usul:\n\n"
+            "1. Kanal ID sini yozing: `-100123456789`\n"
+            "2. Kanaldan xabar forward qiling",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
+            ])
+        )
+        await callback_query.answer()
+        return
+    
     # ===== BOSH MENYUGA QAYTISH =====
     if data == "back_to_main":
         my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
@@ -838,56 +841,6 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         await callback_query.answer()
         return
     
-    # ===== BARCHA MA'LUMOTLARNI YANGILASH =====
-    if data == "refresh_all":
-        await callback_query.message.edit_text("🔄 **Barcha ma'lumotlar yangilanmoqda...**")
-        
-        updated_users = 0
-        for uid in AUTHORIZED_USERS:
-            if uid != YOUR_ID:
-                try:
-                    await client.get_users(uid)
-                    updated_users += 1
-                except:
-                    pass
-        
-        updated_channels = 0
-        for chat_id in list(all_channels.keys()):
-            try:
-                chat = await client.get_chat(chat_id)
-                for uid, ch in user_channels.items():
-                    if ch['chat_id'] == chat_id:
-                        user_channels[uid]['title'] = chat.title
-                        break
-                all_channels[chat_id]['title'] = chat.title
-                updated_channels += 1
-            except:
-                if chat_id in all_channels:
-                    del all_channels[chat_id]
-                for uid, ch in list(user_channels.items()):
-                    if ch['chat_id'] == chat_id:
-                        del user_channels[uid]
-        
-        save_data()
-        
-        my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
-        total_users = len(AUTHORIZED_USERS) - 1
-        total_channels = len(user_channels)
-        
-        text = f"👤 **Xush kelibsiz, @maestro_o!**\n\n"
-        text += f"✅ **Barcha ma'lumotlar yangilandi!**\n"
-        text += f"👥 {updated_users} ta foydalanuvchi\n"
-        text += f"📌 {updated_channels} ta kanal\n\n"
-        text += f"📊 **Statistika:**\n"
-        text += f"• Kanallaringiz: {my_channels} ta\n"
-        text += f"• Ruxsat berganlar: {total_users} ta\n"
-        text += f"• Faol kanallar: {total_channels} ta\n\n"
-        text += f"🔽 Quyidagi tugmalardan foydalaning:"
-        
-        await callback_query.message.edit_text(text, reply_markup=get_main_menu_keyboard())
-        await callback_query.answer("✅ Barcha ma'lumotlar yangilandi!")
-        return
-    
     # ===== KANALLARIM =====
     if data == "my_channels_list":
         await callback_query.message.edit_text("📋 **Kanallaringiz yuklanmoqda...**")
@@ -898,9 +851,15 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
                 try:
                     chat = await client.get_chat(channel['chat_id'])
                     channel['title'] = chat.title
+                    my_channels.append(channel)
                 except:
+                    if uid in user_channels:
+                        del user_channels[uid]
+                    if channel['chat_id'] in all_channels:
+                        del all_channels[channel['chat_id']]
                     continue
-                my_channels.append(channel)
+        
+        save_data()
         
         text = "📋 **KANALLARIM**\n\n"
         
@@ -917,6 +876,7 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
                 monitor_icon = "🟢" if channel.get('monitor', True) else "🔴"
                 btn_text = f"{monitor_icon} {channel['title'][:30]}"
                 keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"my_channel_{channel['chat_id']}")])
+            
             keyboard.append([InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")])
             keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")])
         else:
