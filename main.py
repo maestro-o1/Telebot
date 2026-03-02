@@ -6,6 +6,7 @@ import datetime
 import pysrt
 import aiohttp
 import asyncio
+import re
 from typing import Dict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -140,6 +141,12 @@ def get_language_name(lang_code):
         'ar': 'Arab tili', 'fa': 'Fors tili', 'ur': 'Urdu tili', 'hi': 'Hind tili',
         'es': 'Ispan tili', 'fr': 'Fransuz tili', 'de': 'Nemis tili', 'it': 'Italyan tili',
         'ja': 'Yapon tili', 'ko': 'Koreys tili', 'zh': 'Xitoy tili', 'pt': 'Portugal tili',
+        'id': 'Indonez tili', 'ms': 'Malay tili', 'th': 'Tay tili', 'vi': 'Vyetnam tili',
+        'bn': 'Bengal tili', 'pl': 'Polyak tili', 'uk': 'Ukrain tili', 'ro': 'Rumin tili',
+        'nl': 'Golland tili', 'el': 'Grek tili', 'hu': 'Venger tili', 'sv': 'Shved tili',
+        'cs': 'Chex tili', 'fi': 'Fin tili', 'da': 'Daniya tili', 'he': 'Ibroniycha',
+        'no': 'Norveg tili', 'sk': 'Slovak tili', 'hr': 'Xorvat tili', 'sr': 'Serb tili',
+        'bg': 'Bolg\'ar tili', 'lt': 'Litva tili', 'lv': 'Latish tili', 'et': 'Eston tili',
     }
     return languages.get(lang_code, lang_code.upper())
 
@@ -183,13 +190,14 @@ async def translate_with_deepseek(text, target_lang="uzbek"):
         return None
 
 async def translate_srt_file(srt_path, target_lang="uzbek"):
-    """SRT faylni tarjima qilish"""
+    """SRT faylni tarjima qilish - VAQT KODLARI O'ZGARMAYDI"""
     
     try:
         subs = pysrt.open(srt_path)
         translated_subs = []
         
         for i, sub in enumerate(subs):
+            # FAQAT MATN TARJIMA QILINADI
             translated_text = await translate_with_deepseek(sub.text, target_lang)
             
             if translated_text:
@@ -197,11 +205,14 @@ async def translate_srt_file(srt_path, target_lang="uzbek"):
             else:
                 sub.text = f"[?] {sub.text}"
             
+            # VAQT KODLARI O'ZGARMASIDAN QOLADI
             translated_subs.append(sub)
             
+            # API limiti uchun kutish
             if (i + 1) % 5 == 0:
                 await asyncio.sleep(1)
         
+        # Yangi fayl yaratish
         output_path = srt_path.replace('.srt', f'_uz.srt')
         
         new_subs = pysrt.SubRipFile()
@@ -215,16 +226,164 @@ async def translate_srt_file(srt_path, target_lang="uzbek"):
         logger.error(f"SRT tarjima xatolik: {e}")
         return None
 
+# ==================== SUBTITR FORMATLARINI O'GIRISH ====================
+def vtt_to_srt(vtt_content):
+    """VTT formatini SRT ga o'girish"""
+    lines = vtt_content.split('\n')
+    srt_lines = []
+    counter = 1
+    in_cue = False
+    
+    for line in lines:
+        line = line.strip()
+        
+        # WEBVTT sarlavhasini o'tkazib yuborish
+        if line.startswith('WEBVTT') or line.startswith('NOTE') or line.startswith('STYLE'):
+            continue
+        
+        # Vaqt kodlarini o'girish
+        if '-->' in line:
+            # VTT vaqti: 00:00:00.000 --> 00:00:00.000
+            # SRT vaqti: 00:00:00,000 --> 00:00:00,000
+            line = line.replace('.', ',')
+            # Qo'shimcha belgilarni tozalash
+            line = re.sub(r'<[^>]+>', '', line)
+            srt_lines.append(str(counter))
+            counter += 1
+            srt_lines.append(line)
+            in_cue = True
+        elif line == '':
+            if in_cue:
+                srt_lines.append('')
+                in_cue = False
+        else:
+            if in_cue:
+                # HTML teglarini olib tashlash
+                line = re.sub(r'<[^>]+>', '', line)
+                srt_lines.append(line)
+    
+    return '\n'.join(srt_lines)
+
+def ass_to_srt(ass_content):
+    """ASS/SSA formatini SRT ga o'girish"""
+    
+    srt_lines = []
+    counter = 1
+    
+    # ASS formatida qatorlar: Dialogue: layer,start,end,style,name,marginL,marginR,marginZ,text
+    dialogue_pattern = r'Dialogue:\s*\d+,(\d+:\d+:\d+\.\d+),(\d+:\d+:\d+\.\d+),[^,]*,[^,]*,\d+,\d+,\d+,(.*)'
+    
+    for line in ass_content.split('\n'):
+        if line.startswith('Dialogue:'):
+            match = re.match(dialogue_pattern, line)
+            if match:
+                start = match.group(1).replace('.', ',')
+                end = match.group(2).replace('.', ',')
+                text = match.group(3)
+                
+                # ASS kodlarini olib tashlash
+                text = re.sub(r'\{[^}]*\}', '', text)
+                text = text.replace('\\N', '\n')
+                text = text.replace('\\n', '\n')
+                
+                # HTML teglarini olib tashlash
+                text = re.sub(r'<[^>]+>', '', text)
+                
+                srt_lines.append(str(counter))
+                counter += 1
+                srt_lines.append(f"{start} --> {end}")
+                srt_lines.append(text.strip())
+                srt_lines.append('')
+    
+    return '\n'.join(srt_lines)
+
+def sbv_to_srt(sbv_content):
+    """SBV (YouTube) formatini SRT ga o'girish"""
+    
+    lines = sbv_content.split('\n')
+    srt_lines = []
+    counter = 1
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # SBV formati: 0:00:00.000,0:00:00.000
+        # Matn matn matn
+        if ',' in line and line.count(':') >= 2:
+            # Vaqt qatorini o'girish
+            times = line.split(',')
+            if len(times) == 2:
+                start = times[0].replace('.', ',')
+                end = times[1].replace('.', ',')
+                
+                srt_lines.append(str(counter))
+                counter += 1
+                srt_lines.append(f"{start} --> {end}")
+                
+                # Keyingi qator matn
+                i += 1
+                while i < len(lines) and lines[i].strip():
+                    text = lines[i].strip()
+                    # HTML teglarini olib tashlash
+                    text = re.sub(r'<[^>]+>', '', text)
+                    srt_lines.append(text)
+                    i += 1
+                
+                srt_lines.append('')
+        i += 1
+    
+    return '\n'.join(srt_lines)
+
+def convert_to_srt(input_file, input_format):
+    """Turli formatdagi subtitrni SRT ga o'girish"""
+    
+    output_file = input_file.replace(f'.{input_format}', '.srt')
+    
+    try:
+        with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        if input_format == 'vtt':
+            srt_content = vtt_to_srt(content)
+        elif input_format in ['ass', 'ssa']:
+            srt_content = ass_to_srt(content)
+        elif input_format in ['sbv', 'sub']:
+            srt_content = sbv_to_srt(content)
+        elif input_format == 'srt':
+            # SRT bo'lsa, o'ziday qaytarish
+            return input_file
+        else:
+            # Boshqa formatlar uchun pysrt dan foydalanish
+            try:
+                subs = pysrt.open(input_file)
+                subs.save(output_file, encoding='utf-8')
+                return output_file
+            except:
+                logger.error(f"Format o'girib bo'lmadi: {input_format}")
+                return None
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(srt_content)
+        
+        return output_file
+        
+    except Exception as e:
+        logger.error(f"Konvertatsiya xatolik: {e}")
+        return None
+
 # ==================== YOUTUBE SUBTITR OLISH ====================
 async def get_youtube_subtitles(url):
-    """YouTube dan subtitr olish"""
+    """YouTube dan subtitr olish - HAR QANDAY FORMATDA"""
     
     ydl_opts = {
         'skip_download': True,
         'writesubtitles': True,
         'writeautomaticsub': True,
         'subtitleslangs': ['all'],
+        'subtitlesformat': 'srt/vtt/ass/ssa/sbv',  # HAMMA FORMATLAR
         'quiet': True,
+        'no_warnings': True,
     }
     
     try:
@@ -233,19 +392,43 @@ async def get_youtube_subtitles(url):
             video_title = info.get('title', 'Noma\'lum video')
             
             subtitles = info.get('subtitles', {})
-            auto_captions = info.get('automatic_captions', {})
+            automatic_captions = info.get('automatic_captions', {})
             
             available_langs = {}
             
+            # Qo'lda kiritilgan subtitrlar - HAR QANDAY FORMAT
             for lang, sub_data in subtitles.items():
                 if sub_data:
+                    formats = []
+                    for sub in sub_data:
+                        ext = sub.get('ext', 'unknown')
+                        if ext not in formats:
+                            formats.append(ext)
+                    
                     lang_name = get_language_name(lang)
-                    available_langs[lang] = {'name': lang_name, 'type': 'manual'}
+                    available_langs[lang] = {
+                        'name': lang_name, 
+                        'type': 'manual',
+                        'data': sub_data,
+                        'formats': formats
+                    }
             
-            for lang, sub_data in auto_captions.items():
+            # Avtomatik subtitrlar - HAR QANDAY FORMAT
+            for lang, sub_data in automatic_captions.items():
                 if sub_data and lang not in available_langs:
+                    formats = []
+                    for sub in sub_data:
+                        ext = sub.get('ext', 'unknown')
+                        if ext not in formats:
+                            formats.append(ext)
+                    
                     lang_name = get_language_name(lang)
-                    available_langs[lang] = {'name': lang_name + ' (auto)', 'type': 'auto'}
+                    available_langs[lang] = {
+                        'name': lang_name + ' (auto)', 
+                        'type': 'auto',
+                        'data': sub_data,
+                        'formats': formats
+                    }
             
             return video_title, available_langs, info
             
@@ -253,39 +436,65 @@ async def get_youtube_subtitles(url):
         logger.error(f"YouTube xatolik: {e}")
         return None, {}, None
 
-async def download_subtitle(url, lang_code, lang_type):
-    """Subtitrni yuklab olish"""
+async def download_subtitle(url, lang_code, lang_info):
+    """Subtitrni yuklab olish va SRT ga o'girish - HAR QANDAY FORMAT"""
     
     with tempfile.NamedTemporaryFile(suffix='.srt', delete=False) as tmp_file:
         temp_filename = tmp_file.name
     
-    ydl_opts = {
-        'skip_download': True,
-        'writesubtitles': True,
-        'subtitleslangs': [lang_code],
-        'subtitlesformat': 'srt',
-        'outtmpl': temp_filename.replace('.srt', ''),
-        'quiet': True,
-    }
-    
-    if lang_type == 'auto':
-        ydl_opts['writeautomaticsub'] = True
-    else:
-        ydl_opts['writeautomaticsub'] = False
-    
     try:
+        # yt-dlp orqali subtitr yuklab olish (eng yaxshi formatda)
+        ydl_opts = {
+            'skip_download': True,
+            'writesubtitles': True,
+            'subtitleslangs': [lang_code],
+            'subtitlesformat': 'srt/vtt/ass/ssa/sbv',  # BARCHA FORMATLAR
+            'outtmpl': temp_filename.replace('.srt', ''),
+            'quiet': True,
+        }
+        
+        if lang_info['type'] == 'auto':
+            ydl_opts['writeautomaticsub'] = True
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        possible_srt = temp_filename.replace('.srt', '') + f'.{lang_code}.srt'
-        if not os.path.exists(possible_srt):
-            possible_srt = temp_filename.replace('.srt', '') + '.srt'
+        # Yuklab olingan faylni topish (qanday formatda bo'lsa)
+        base_name = temp_filename.replace('.srt', '')
+        possible_files = []
         
-        if os.path.exists(possible_srt) and os.path.getsize(possible_srt) > 0:
-            return possible_srt
-        else:
-            return None
+        # Barcha mumkin bo'lgan formatlar
+        for ext in ['srt', 'vtt', 'ass', 'ssa', 'sbv', 'sub', 'dfxp', 'ttml']:
+            # Format: base_name.lang.ext
+            file_path = f"{base_name}.{lang_code}.{ext}"
+            if os.path.exists(file_path):
+                possible_files.append((file_path, ext))
             
+            # Format: base_name.ext
+            file_path2 = f"{base_name}.{ext}"
+            if os.path.exists(file_path2):
+                possible_files.append((file_path2, ext))
+        
+        if not possible_files:
+            logger.error(f"Hech qanday subtitr fayli topilmadi: {base_name}")
+            return None
+        
+        # Topilgan faylni SRT ga o'girish
+        downloaded_file, file_ext = possible_files[0]
+        logger.info(f"Subtitr topildi: {downloaded_file} ({file_ext})")
+        
+        # Formatni o'girish
+        if file_ext != 'srt':
+            srt_file = convert_to_srt(downloaded_file, file_ext)
+            # Vaqtinchalik faylni o'chirish
+            try:
+                os.remove(downloaded_file)
+            except:
+                pass
+            return srt_file
+        else:
+            return downloaded_file
+        
     except Exception as e:
         logger.error(f"Subtitr yuklash xatolik: {e}")
         return None
@@ -381,7 +590,7 @@ async def admin_manage_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     for uid, uname, expires in users:
         days_left = (datetime.datetime.fromisoformat(expires) - datetime.datetime.now()).days
-        text += f"🆔 {uid} | @{uname} | {days_left} kun\n"
+        text += f"🆔 {uid} | @{uname} | {days_left} kun qoldi\n"
         keyboard.append([InlineKeyboardButton(f"❌ {uid} ni bekor qilish", callback_data=f"remove_{uid}")])
     
     keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")])
@@ -440,7 +649,7 @@ async def remove_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     for uid, uname, expires in users:
         days_left = (datetime.datetime.fromisoformat(expires) - datetime.datetime.now()).days
-        text += f"🆔 {uid} | @{uname} | {days_left} kun\n"
+        text += f"🆔 {uid} | @{uname} | {days_left} kun qoldi\n"
         keyboard.append([InlineKeyboardButton(f"❌ {uid} ni bekor qilish", callback_data=f"remove_{uid}")])
     
     keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")])
@@ -653,20 +862,18 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = []
     
     for lang_code, lang_info in available_langs.items():
+        formats_text = f" [{', '.join(lang_info['formats'])}]" if lang_info['formats'] else ""
+        
         if lang_info['type'] == 'manual':
-            button = InlineKeyboardButton(
-                f"📝 {lang_info['name']}",
-                callback_data=f"sub_{lang_code}"
-            )
-            keyboard.append([button])
-    
-    for lang_code, lang_info in available_langs.items():
-        if lang_info['type'] == 'auto':
-            button = InlineKeyboardButton(
-                f"🤖 {lang_info['name']}",
-                callback_data=f"sub_{lang_code}"
-            )
-            keyboard.append([button])
+            button_text = f"📝 {lang_info['name']}{formats_text}"
+        else:
+            button_text = f"🤖 {lang_info['name']}{formats_text}"
+        
+        button = InlineKeyboardButton(
+            button_text,
+            callback_data=f"sub_{lang_code}"
+        )
+        keyboard.append([button])
     
     keyboard.append([InlineKeyboardButton("🔙 Asosiy menyu", callback_data="main_back")])
     
@@ -678,7 +885,8 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await progress_msg.edit_text(
         f"📹 *{video_title[:50]}*\n\n"
-        f"🎯 {len(available_langs)} ta subtitr topildi. Tanlang:",
+        f"🎯 {len(available_langs)} ta subtitr topildi. Format: SRT/VTT/ASS\n\n"
+        f"Tanlang:",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -716,7 +924,7 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         
-        srt_file = await download_subtitle(url, lang_code, lang_info['type'])
+        srt_file = await download_subtitle(url, lang_code, lang_info)
         
         if srt_file:
             save_user_file(user_id, srt_file, video_title, lang_info['name'])
@@ -857,7 +1065,8 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     filename=f"ozbekcha_{os.path.basename(srt_file)}",
                     caption=f"✅ *Tarjima tayyor!*\n\n"
                             f"🧠 Sun'iy intellekt yordamida O'zbek tiliga sifatli tarjima qilindi.\n"
-                            f"📁 Asl fayl: {video_title}",
+                            f"📁 Asl fayl: {video_title}\n"
+                            f"⏱️ Vaqt kodlari o'zgarmadi!",
                     parse_mode='Markdown'
                 )
             
@@ -923,6 +1132,7 @@ def main():
     
     print("🤖 Bot ishga tushdi...")
     print(f"👑 Admin ID: {ADMIN_ID}")
+    print(f"📊 Barcha formatlar qo'llab-quvvatlanadi: SRT, VTT, ASS, SSA, SBV")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
