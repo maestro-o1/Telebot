@@ -232,28 +232,33 @@ async def check_bot_admin(client, chat_id):
 
 # ==================== KANAL QO'SHISH ====================
 async def add_channel_for_user(client, user_id, chat_id, chat_title):
-    if user_id in user_channels:
-        old_chat_id = user_channels[user_id]["chat_id"]
-        if old_chat_id in all_channels:
-            del all_channels[old_chat_id]
-        if old_chat_id in scheduled:
-            del scheduled[old_chat_id]
-    
-    user_channels[user_id] = {
-        "chat_id": chat_id,
-        "title": chat_title,
-        "monitor": True
-    }
-    
-    all_channels[chat_id] = {
-        "owner_id": user_id,
-        "title": chat_title,
-        "monitor": True
-    }
-    
-    save_data()
-    print(f"✅ Kanal qo'shildi: {chat_title} (user: {user_id})")
-    return True
+    try:
+        if user_id in user_channels:
+            old_chat_id = user_channels[user_id]["chat_id"]
+            if old_chat_id in all_channels:
+                del all_channels[old_chat_id]
+            if old_chat_id in scheduled:
+                del scheduled[old_chat_id]
+            print(f"📌 Eski kanal o'chirildi: {old_chat_id}")
+        
+        user_channels[user_id] = {
+            "chat_id": chat_id,
+            "title": chat_title,
+            "monitor": True
+        }
+        
+        all_channels[chat_id] = {
+            "owner_id": user_id,
+            "title": chat_title,
+            "monitor": True
+        }
+        
+        save_data()
+        print(f"✅ Kanal qo'shildi: {chat_title} (user: {user_id})")
+        return True
+    except Exception as e:
+        print(f"❌ Kanal qo'shish xatosi: {e}")
+        return False
 
 # ==================== KANALNI O'CHIRISH ====================
 async def remove_channel_for_user(client, user_id):
@@ -286,7 +291,7 @@ def get_back_keyboard(target):
         [InlineKeyboardButton("🔙 Orqaga", callback_data=f"back_to_{target}")]
     ])
 
-# ==================== START ====================
+# ==================== START (TO'G'IRLANGAN) ====================
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
     user_id = message.from_user.id
@@ -299,6 +304,7 @@ async def start_command(client, message):
         )
         return
     
+    # Admin panel (siz uchun)
     if is_owner(user_id):
         my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
         total_users = len(AUTHORIZED_USERS) - 1
@@ -312,32 +318,33 @@ async def start_command(client, message):
         text += f"🔽 Quyidagi tugmalardan foydalaning:"
         
         await message.reply_text(text, reply_markup=get_main_menu_keyboard())
+        return
     
-    else:
-        if user_id in user_channels:
-            channel = user_channels[user_id]
-            text = f"✅ **SIZNING KANALINGIZ**\n\n"
-            text += f"📌 {channel['title']}\n"
-            text += f"🆔 `{channel['chat_id']}`\n\n"
-            text += "Quyidagi tugmalar orqali boshqaring:"
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("👥 A'zolar", callback_data="members")],
-                [InlineKeyboardButton("⏰ Bloklashlar", callback_data="bans")],
-                [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
-                [InlineKeyboardButton("🔄 Kanalni almashtirish", callback_data="change_channel"),
-                 InlineKeyboardButton("🗑 O'chirish", callback_data="delete_channel_confirm")],
-                [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
-            ])
-        else:
-            text = "👋 **XUSH KELIBSIZ!**\n\n"
-            text += "Botdan foydalanish uchun kanalingizni qo'shing:"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")],
-                [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
-            ])
+    # Oddiy foydalanuvchi
+    if user_id in user_channels:
+        channel = user_channels[user_id]
+        text = f"✅ **SIZNING KANALINGIZ**\n\n"
+        text += f"📌 {channel['title']}\n"
+        text += f"🆔 `{channel['chat_id']}`\n\n"
+        text += "Quyidagi tugmalar orqali boshqaring:"
         
-        await message.reply_text(text, reply_markup=keyboard)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 A'zolar", callback_data="members")],
+            [InlineKeyboardButton("⏰ Bloklashlar", callback_data="bans")],
+            [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
+            [InlineKeyboardButton("🔄 Kanalni almashtirish", callback_data="change_channel"),
+             InlineKeyboardButton("🗑 O'chirish", callback_data="delete_channel_confirm")],
+            [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
+        ])
+    else:
+        text = "👋 **XUSH KELIBSIZ!**\n\n"
+        text += "Botdan foydalanish uchun kanalingizni qo'shing:"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")],
+            [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
+        ])
+    
+    await message.reply_text(text, reply_markup=keyboard)
 
 # ==================== KANALDA @uzdramadubbot YOZILSA ====================
 @app.on_message(filters.text & filters.regex(r"^@uzdramadubbot$") & filters.channel)
@@ -502,7 +509,7 @@ async def handle_admin_input(client, message):
         await message.reply_text(f"❌ Xatolik: {str(e)}")
         temp_data.pop(user_id, None)
 
-# ==================== KANAL QO'SHISH (ID VA FORWARD) ====================
+# ==================== KANAL QO'SHISH (ID VA FORWARD) - TO'G'IRLANGAN ====================
 @app.on_message()
 async def handle_other_messages(client, message):
     if message.chat.type != enums.ChatType.PRIVATE:
@@ -536,19 +543,29 @@ async def handle_other_messages(client, message):
                 )
                 return
             
-            await add_channel_for_user(client, user_id, chat_id, chat.title)
+            # Kanalni qo'shish
+            success = await add_channel_for_user(client, user_id, chat_id, chat.title)
             
-            reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
-            await msg.edit_text(
-                f"✅ **KANAL QO'SHILDI!**\n\n📌 {chat.title}\n🆔 `{chat_id}`\n📎 Forward orqali\n\nEndi /start ni bosing",
-                reply_markup=reply_markup
-            )
+            if success:
+                reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
+                await msg.edit_text(
+                    f"✅ **KANAL MUVOFFAQIYATLI QO'SHILDI!**\n\n"
+                    f"📌 {chat.title}\n"
+                    f"🆔 `{chat_id}`\n"
+                    f"👥 A'zolar: {chat.members_count if hasattr(chat, 'members_count') else '?'}\n\n"
+                    f"Endi /start ni bosing",
+                    reply_markup=reply_markup
+                )
+            else:
+                await msg.edit_text("❌ Kanal qo'shilmadi! Noma'lum xatolik.")
+            
             return
             
         except Exception as e:
             await msg.edit_text(f"❌ Xatolik: {str(e)}")
             return
     
+    # Oddiy matn (kanal ID)
     if not message.text:
         return
     
@@ -576,18 +593,29 @@ async def handle_other_messages(client, message):
                 )
                 return
             
-            await add_channel_for_user(client, user_id, chat_id, chat.title)
+            # Kanalni qo'shish
+            success = await add_channel_for_user(client, user_id, chat_id, chat.title)
             
-            members = chat.members_count if hasattr(chat, 'members_count') else "?"
-            reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
+            if success:
+                members = chat.members_count if hasattr(chat, 'members_count') else "?"
+                reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
+                
+                await msg.edit_text(
+                    f"✅ **KANAL MUVOFFAQIYATLI QO'SHILDI!**\n\n"
+                    f"📌 {chat.title}\n"
+                    f"🆔 `{chat_id}`\n"
+                    f"👥 A'zolar: {members}\n\n"
+                    f"Endi /start ni bosing",
+                    reply_markup=reply_markup
+                )
+            else:
+                await msg.edit_text("❌ Kanal qo'shilmadi! Noma'lum xatolik.")
             
-            await msg.edit_text(
-                f"✅ **KANAL QO'SHILDI!**\n\n📌 {chat.title}\n🆔 `{chat_id}`\n👥 A'zolar: {members}\n\nEndi /start ni bosing",
-                reply_markup=reply_markup
-            )
+            return
             
         except Exception as e:
             await message.reply_text(f"❌ Xatolik: {str(e)}")
+            return
 
 # ==================== YANGI A'ZO QO'SHILGANDA ====================
 @app.on_chat_member_updated()
@@ -814,7 +842,6 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
     if data == "refresh_all":
         await callback_query.message.edit_text("🔄 **Barcha ma'lumotlar yangilanmoqda...**")
         
-        # 1. Foydalanuvchilarni yangilash
         updated_users = 0
         for uid in AUTHORIZED_USERS:
             if uid != YOUR_ID:
@@ -824,12 +851,10 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
                 except:
                     pass
         
-        # 2. Kanallarni yangilash
         updated_channels = 0
         for chat_id in list(all_channels.keys()):
             try:
                 chat = await client.get_chat(chat_id)
-                # Kanal nomini yangilash
                 for uid, ch in user_channels.items():
                     if ch['chat_id'] == chat_id:
                         user_channels[uid]['title'] = chat.title
@@ -837,7 +862,6 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
                 all_channels[chat_id]['title'] = chat.title
                 updated_channels += 1
             except:
-                # Kanal o'chirilgan bo'lsa, ro'yxatdan o'chirish
                 if chat_id in all_channels:
                     del all_channels[chat_id]
                 for uid, ch in list(user_channels.items()):
@@ -846,7 +870,6 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         
         save_data()
         
-        # 3. Yangi statistikani ko'rsatish
         my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
         total_users = len(AUTHORIZED_USERS) - 1
         total_channels = len(user_channels)
