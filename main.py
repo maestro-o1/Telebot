@@ -810,6 +810,61 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
     
     data = callback_query.data
     
+    # ===== BARCHA MA'LUMOTLARNI YANGILASH =====
+    if data == "refresh_all":
+        await callback_query.message.edit_text("🔄 **Barcha ma'lumotlar yangilanmoqda...**")
+        
+        # 1. Foydalanuvchilarni yangilash
+        updated_users = 0
+        for uid in AUTHORIZED_USERS:
+            if uid != YOUR_ID:
+                try:
+                    user = await client.get_users(uid)
+                    updated_users += 1
+                except:
+                    pass
+        
+        # 2. Kanallarni yangilash
+        updated_channels = 0
+        for chat_id in list(all_channels.keys()):
+            try:
+                chat = await client.get_chat(chat_id)
+                # Kanal nomini yangilash
+                for uid, ch in user_channels.items():
+                    if ch['chat_id'] == chat_id:
+                        user_channels[uid]['title'] = chat.title
+                        break
+                all_channels[chat_id]['title'] = chat.title
+                updated_channels += 1
+            except:
+                # Kanal o'chirilgan bo'lsa, ro'yxatdan o'chirish
+                if chat_id in all_channels:
+                    del all_channels[chat_id]
+                for uid, ch in list(user_channels.items()):
+                    if ch['chat_id'] == chat_id:
+                        del user_channels[uid]
+        
+        save_data()
+        
+        # 3. Yangi statistikani ko'rsatish
+        my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
+        total_users = len(AUTHORIZED_USERS) - 1
+        total_channels = len(user_channels)
+        
+        text = f"👤 **Xush kelibsiz, @maestro_o!**\n\n"
+        text += f"✅ **Barcha ma'lumotlar yangilandi!**\n"
+        text += f"👥 {updated_users} ta foydalanuvchi\n"
+        text += f"📌 {updated_channels} ta kanal\n\n"
+        text += f"📊 **Statistika:**\n"
+        text += f"• Kanallaringiz: {my_channels} ta\n"
+        text += f"• Ruxsat berganlar: {total_users} ta\n"
+        text += f"• Faol kanallar: {total_channels} ta\n\n"
+        text += f"🔽 Quyidagi tugmalardan foydalaning:"
+        
+        await callback_query.message.edit_text(text, reply_markup=get_main_menu_keyboard())
+        await callback_query.answer("✅ Barcha ma'lumotlar yangilandi!")
+        return
+    
     # ===== KANAL QO'SHISH =====
     if data == "add_channel":
         await callback_query.message.edit_text(
