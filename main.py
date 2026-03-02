@@ -5,6 +5,7 @@ import asyncio
 import threading
 import json
 import os
+import time
 
 # SOZLAMALAR
 API_ID = 35058290
@@ -22,9 +23,9 @@ scheduled = {}  # {chat_id: {user_id: {...}}}
 selected_channel = {}  # {user_id: {"chat_id": ..., "title": ...}}
 user_history = {}  # {chat_id: {user_id: {...}}}
 bot_channels = {}  # {chat_id: {"title": ..., "username": ...}}
-last_check = {}  # Oxirgi tekshirish vaqtlari
-temp_data = {}  # Vaqtinchalik ma'lumotlar
+last_check = {}  # Oxirgi tekshirish vaqtlari (duplicate oldini olish)
 time_settings = {}  # {user_id: soat_farqi} - Vaqt sozlamalari
+temp_data = {}  # Vaqtinchalik ma'lumotlar
 
 # ==================== VAQT FUNKSIYALARI ====================
 def local_time(user_id=None):
@@ -36,7 +37,6 @@ def local_time(user_id=None):
 def format_time(dt, user_id=None):
     """Vaqtni formatlash (lokal vaqt bilan)"""
     if isinstance(dt, datetime):
-        # Agar dt UTC bo'lsa, lokalga o'tkazish
         soat_farqi = time_settings.get(user_id, 5) if user_id else 5
         local_dt = dt + timedelta(hours=soat_farqi)
         return local_dt.strftime("%H:%M %d.%m.%Y")
@@ -930,76 +930,114 @@ async def handle_skip_callback(client, callback_query):
     )
     await callback_query.answer("❌ Bekor qilindi")
 
-# ==================== YANGI FOYDALANUVCHI QO'SHILGANDA ====================
+# ==================== YANGI FOYDALANUVCHI QO'SHILGANDA (TO'G'IRLANGAN) ====================
 @app.on_chat_member_updated()
 async def on_chat_member_update(client, chat_member_updated):
-    """Kanalga yangi odam qo'shilganda habar berish"""
-    chat = chat_member_updated.chat
-    new_member = chat_member_updated.new_chat_member
-    old_member = chat_member_updated.old_chat_member
+    """Kanalga yangi odam qo'shilganda habar berish (DUPLICATE NI OLDINI OLISH)"""
     
+    # MUHIM: Faqat kanallarni tekshirish
+    chat = chat_member_updated.chat
     if chat.type not in [enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP]:
         return
     
-    if new_member and not old_member:
-        user = new_member.user
-        
-        if user.is_bot:
+    # Yangi a'zo qo'shilganini tekshirish
+    new_member = chat_member_updated.new_chat_member
+    old_member = chat_member_updated.old_chat_member
+    
+    # DUPLICATE NI OLDINI OLISH:
+    # 1. Agar old va yangi holat bir xil bo'lsa -> ignore
+    if old_member and new_member and old_member.status == new_member.status:
+        return
+    
+    # 2. Faqat "member" bo'lganlarni tekshirish (creator/administrator emas)
+    if not new_member or new_member.status not in [enums.ChatMemberStatus.MEMBER]:
+        return
+    
+    # 3. Agar oldingi holat ham MEMBER bo'lsa -> ignore (bu yangilanish emas)
+    if old_member and old_member.status == enums.ChatMemberStatus.MEMBER:
+        return
+    
+    # 4. Faqat RESTRICTED dan MEMBER ga o'tishlarni ham ignore qilish
+    if old_member and old_member.status == enums.ChatMemberStatus.RESTRICTED:
+        return
+    
+    user = new_member.user
+    
+    # Botlarni ignore qilish
+    if user.is_bot:
+        return
+    
+    # Bot adminligini tekshirish
+    is_admin, _ = await check_bot_admin(client, chat.id)
+    if not is_admin:
+        return
+    
+    # UNIKAL KALIT YARATISH (cache uchun)
+    cache_key = f"{chat.id}_{user.id}"
+    current_time = time.time()
+    
+    # 5. So'nggi 10 soniyada xuddi shu hodisa bo'lganmi?
+    if cache_key in last_check:
+        if current_time - last_check[cache_key] < 10:
+            print(f"⏭️ Duplicate habar oldini olindi: {user.id}")
             return
+    
+    # Vaqtni saqlash
+    last_check[cache_key] = current_time
+    
+    user_id = user.id
+    username = f"@{user.username}" if user.username else "username yo'q"
+    first_name = user.first_name or ""
+    last_name = user.last_name or ""
+    full_name = f"{first_name} {last_name}".strip()
+    join_time = datetime.utcnow()
+    
+    print(f"✅ Yangi a'zo qo'shildi: {full_name} ({user_id}) - {chat.title}")
+    
+    # Foydalanuvchi tarixini saqlash
+    if chat.id not in user_history:
+        user_history[chat.id] = {}
         
-        is_admin, _ = await check_bot_admin(client, chat.id)
-        if not is_admin:
-            return
-        
-        user_id = user.id
-        username = f"@{user.username}" if user.username else "username yo'q"
-        first_name = user.first_name or ""
-        last_name = user.last_name or ""
-        full_name = f"{first_name} {last_name}".strip()
-        join_time = datetime.utcnow()
-        
-        if chat.id not in user_history:
-            user_history[chat.id] = {}
-            
-        user_history[chat.id][user_id] = {
-            "username": username,
-            "full_name": full_name,
-            "join_time": join_time,
-            "leave_time": None,
-            "status": "active",
-            "chat_id": chat.id,
-            "chat_title": chat.title
-        }
-        save_data()
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏱️ 5 minut", callback_data=f"ban_{chat.id}_{user_id}_5m")],
-            [InlineKeyboardButton("⏱️ 10 minut", callback_data=f"ban_{chat.id}_{user_id}_10m")],
-            [InlineKeyboardButton("⏱️ 30 minut", callback_data=f"ban_{chat.id}_{user_id}_30m")],
-            [InlineKeyboardButton("📅 1 kun", callback_data=f"ban_{chat.id}_{user_id}_1k")],
-            [InlineKeyboardButton("📅 5 kun", callback_data=f"ban_{chat.id}_{user_id}_5k")],
-            [InlineKeyboardButton("📅 10 kun", callback_data=f"ban_{chat.id}_{user_id}_10k")],
-            [InlineKeyboardButton("📅 20 kun", callback_data=f"ban_{chat.id}_{user_id}_20k")],
-            [InlineKeyboardButton("📅 30 kun", callback_data=f"ban_{chat.id}_{user_id}_30k")],
-            [InlineKeyboardButton("📅 40 kun", callback_data=f"ban_{chat.id}_{user_id}_40k")],
-            [InlineKeyboardButton("📆 1 oy", callback_data=f"ban_{chat.id}_{user_id}_1oy")],
-            [InlineKeyboardButton("📆 2 oy", callback_data=f"ban_{chat.id}_{user_id}_2oy")],
-            [InlineKeyboardButton("📆 3 oy", callback_data=f"ban_{chat.id}_{user_id}_3oy")],
-            [InlineKeyboardButton("❌ Bloklamaslik", callback_data=f"skip_{chat.id}_{user_id}")]
-        ])
-        
-        await client.send_message(
-            YOUR_ID,
-            f"👤 **YANGI A'ZO QO'SHILDI!**\n\n"
-            f"📌 **Kanal:** {chat.title}\n"
-            f"🆔 **Kanal ID:** `{chat.id}`\n"
-            f"👤 **Foydalanuvchi:** {full_name}\n"
-            f"🆔 **ID:** `{user_id}`\n"
-            f"📱 **Username:** {username}\n"
-            f"🔗 **Profil:** tg://user?id={user_id}\n\n"
-            f"⏰ **Qo'shilgan vaqt:** {format_time(join_time, YOUR_ID)}",
-            reply_markup=keyboard
-        )
+    user_history[chat.id][user_id] = {
+        "username": username,
+        "full_name": full_name,
+        "join_time": join_time,
+        "leave_time": None,
+        "status": "active",
+        "chat_id": chat.id,
+        "chat_title": chat.title
+    }
+    save_data()
+    
+    # Tugmalar
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏱️ 5 minut", callback_data=f"ban_{chat.id}_{user_id}_5m")],
+        [InlineKeyboardButton("⏱️ 10 minut", callback_data=f"ban_{chat.id}_{user_id}_10m")],
+        [InlineKeyboardButton("⏱️ 30 minut", callback_data=f"ban_{chat.id}_{user_id}_30m")],
+        [InlineKeyboardButton("📅 1 kun", callback_data=f"ban_{chat.id}_{user_id}_1k")],
+        [InlineKeyboardButton("📅 5 kun", callback_data=f"ban_{chat.id}_{user_id}_5k")],
+        [InlineKeyboardButton("📅 10 kun", callback_data=f"ban_{chat.id}_{user_id}_10k")],
+        [InlineKeyboardButton("📅 20 kun", callback_data=f"ban_{chat.id}_{user_id}_20k")],
+        [InlineKeyboardButton("📅 30 kun", callback_data=f"ban_{chat.id}_{user_id}_30k")],
+        [InlineKeyboardButton("📅 40 kun", callback_data=f"ban_{chat.id}_{user_id}_40k")],
+        [InlineKeyboardButton("📆 1 oy", callback_data=f"ban_{chat.id}_{user_id}_1oy")],
+        [InlineKeyboardButton("📆 2 oy", callback_data=f"ban_{chat.id}_{user_id}_2oy")],
+        [InlineKeyboardButton("📆 3 oy", callback_data=f"ban_{chat.id}_{user_id}_3oy")],
+        [InlineKeyboardButton("❌ Bloklamaslik", callback_data=f"skip_{chat.id}_{user_id}")]
+    ])
+    
+    await client.send_message(
+        YOUR_ID,
+        f"👤 **YANGI A'ZO QO'SHILDI!**\n\n"
+        f"📌 **Kanal:** {chat.title}\n"
+        f"🆔 **Kanal ID:** `{chat.id}`\n"
+        f"👤 **Foydalanuvchi:** {full_name}\n"
+        f"🆔 **ID:** `{user_id}`\n"
+        f"📱 **Username:** {username}\n"
+        f"🔗 **Profil:** tg://user?id={user_id}\n\n"
+        f"⏰ **Qo'shilgan vaqt:** {format_time(join_time, YOUR_ID)}",
+        reply_markup=keyboard
+    )
 
 # ==================== @uzdramadubbot GA JAVOB ====================
 @app.on_message(filters.text & filters.regex(r"^@uzdramadubbot$"))
@@ -1587,6 +1625,7 @@ print("   • Kanal ID ni o'zi yozilsa qo'shiladi")
 print("   • Vaqtni sozlash imkoniyati (/settime 5)")
 print("   • Tugmalar bilan to'liq boshqarish")
 print("   • Aniq xatolik habarlari")
+print("   • DUPLICATE HABARLAR OLDINI OLINGAN!")
 print("=" * 60)
 
 app.run()
