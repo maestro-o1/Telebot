@@ -885,7 +885,7 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await progress_msg.edit_text(
         f"📹 *{video_title[:50]}*\n\n"
-        f"🎯 {len(available_langs)} ta subtitr topildi. Format: SRT/VTT/ASS\n\n"
+        f"🎯 {len(available_langs)} ta subtitr topildi.\n\n"
         f"Tanlang:",
         reply_markup=reply_markup,
         parse_mode='Markdown'
@@ -917,16 +917,17 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Xatolik yuz berdi. Qaytadan boshlang.")
             return
         
-        lang_info = langs[lang_code]
+        lang_info = langs[lang_code]  # BU DICTIONARY!
         
         await query.edit_message_text(
             f"⏳ {lang_info['name']} yuklanmoqda...",
             parse_mode='Markdown'
         )
         
+        # TO'G'RI: lang_info ni to'liq yuborish
         srt_file = await download_subtitle(url, lang_code, lang_info)
         
-        if srt_file:
+        if srt_file and os.path.exists(srt_file):
             save_user_file(user_id, srt_file, video_title, lang_info['name'])
             
             with open(srt_file, 'rb') as f:
@@ -955,7 +956,10 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.delete_message()
             
         else:
-            await query.edit_message_text("❌ Subtitr yuklab olishda xatolik yuz berdi.")
+            await query.edit_message_text(
+                f"❌ Subtitr yuklab olishda xatolik yuz berdi.\n"
+                f"Boshqa tilni tanlab ko'ring yoki keyinroq urinib ko'ring."
+            )
     
     elif data == "main_back":
         if user_id == ADMIN_ID:
@@ -1133,6 +1137,7 @@ def main():
     print("🤖 Bot ishga tushdi...")
     print(f"👑 Admin ID: {ADMIN_ID}")
     print(f"📊 Barcha formatlar qo'llab-quvvatlanadi: SRT, VTT, ASS, SSA, SBV")
+    print(f"✅ MUHIM: subtitle_callback da lang_info to'liq yuboriladi!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
