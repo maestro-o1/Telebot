@@ -3,57 +3,33 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import asyncio
 import threading
+import time
 import json
 import os
-import logging
 from pathlib import Path
 
-# ==================== LOGLARNI SOZLASH ====================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# ==================== SOZLAMALAR ====================
+# SOZLAMALAR
 API_ID = 35058290
 API_HASH = "d7cb549b10b8965c99673f8bd36c130a"
 BOT_TOKEN = "8660286208:AAHssllobxtng0RDXfZ70fEkfFbjx13FyQE"
 
-# SIZNING ID INGIZ
+# ============= SIZNING ID INGIZ =============
 YOUR_ID = 1700341163  # @maestro_o
 YOUR_CHANNEL_ID = -1003726881716  # Kanal ID ingiz
+# ===========================================
 
-# ==================== RENDER.COM SOZLAMALARI ====================
-# Render.com worker service hech qachon uxlamaydi
-IS_RENDER = os.environ.get('RENDER', False)
-PORT = int(os.environ.get('PORT', 10000))
-
-# Ma'lumotlar fayli uchun joy (Render.com diskka yozish imkonini beradi)
-DATA_DIR = "/opt/render/project/data" if IS_RENDER else "."
-DATA_FILE = os.path.join(DATA_DIR, "bot_data.json")
-
-# Ma'lumotlar papkasini yaratish
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-app = Client(
-    "my_bot", 
-    api_id=API_ID, 
-    api_hash=API_HASH, 
-    bot_token=BOT_TOKEN,
-    workdir=DATA_DIR,  # Session fayllar ham data papkasida saqlansin
-    in_memory=False    # Diskka saqlash
-)
+app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # Ma'lumotlar ombori
 scheduled = {}
 selected_channel = {}
 bot_channels = {}
 user_history = {}
-last_check = {}
+last_check = {}  # Oxirgi tekshirish vaqtlari
 
 # ==================== MA'LUMOTLARNI SAQLASH ====================
+DATA_FILE = "bot_data.json"
+
 def save_data():
     """Ma'lumotlarni faylga saqlash"""
     try:
@@ -88,19 +64,11 @@ def save_data():
                 "ban_time_str": hist_data.get("ban_time_str", "")
             }
         
-        # Vaqtinchalik faylga yozish (corruption oldini olish)
-        temp_file = DATA_FILE + ".tmp"
-        with open(temp_file, "w") as f:
+        with open(DATA_FILE, "w") as f:
             json.dump(data, f, indent=2)
-        
-        # Atomik rename
-        os.replace(temp_file, DATA_FILE)
-        
-        logger.info(f"✅ Ma'lumotlar saqlandi: {datetime.now().strftime('%H:%M:%S')}")
-        return True
+        print(f"✅ Ma'lumotlar saqlandi: {datetime.now().strftime('%H:%M:%S')}")
     except Exception as e:
-        logger.error(f"❌ Ma'lumotlarni saqlashda xatolik: {e}")
-        return False
+        print(f"❌ Ma'lumotlarni saqlashda xatolik: {e}")
 
 def load_data():
     """Ma'lumotlarni fayldan yuklash"""
@@ -113,70 +81,33 @@ def load_data():
             for chat_id, users in data.get("scheduled", {}).items():
                 scheduled[int(chat_id)] = {}
                 for user_id, user_data in users.items():
-                    try:
-                        scheduled[int(chat_id)][int(user_id)] = {
-                            "username": user_data.get("username", ""),
-                            "full_name": user_data.get("full_name", ""),
-                            "time": datetime.fromisoformat(user_data["time"]),
-                            "user_id": user_data["user_id"],
-                            "join_time": datetime.fromisoformat(user_data["join_time"]) if user_data.get("join_time") else datetime.now(),
-                            "permanent": user_data.get("permanent", False)
-                        }
-                    except:
-                        continue
+                    scheduled[int(chat_id)][int(user_id)] = {
+                        "username": user_data.get("username", ""),
+                        "full_name": user_data.get("full_name", ""),
+                        "time": datetime.fromisoformat(user_data["time"]),
+                        "user_id": user_data["user_id"],
+                        "join_time": datetime.fromisoformat(user_data["join_time"]) if user_data.get("join_time") else datetime.now(),
+                        "permanent": user_data.get("permanent", False)
+                    }
             
             # user_history ma'lumotlarini yuklash
             for user_id, hist_data in data.get("user_history", {}).items():
-                try:
-                    user_history[int(user_id)] = {
-                        "username": hist_data.get("username", ""),
-                        "full_name": hist_data.get("full_name", ""),
-                        "join_time": datetime.fromisoformat(hist_data["join_time"]),
-                        "leave_time": datetime.fromisoformat(hist_data["leave_time"]) if hist_data.get("leave_time") else None,
-                        "status": hist_data.get("status", ""),
-                        "scheduled_ban": datetime.fromisoformat(hist_data["scheduled_ban"]) if hist_data.get("scheduled_ban") else None,
-                        "ban_time_str": hist_data.get("ban_time_str", "")
-                    }
-                except:
-                    continue
+                user_history[int(user_id)] = {
+                    "username": hist_data.get("username", ""),
+                    "full_name": hist_data.get("full_name", ""),
+                    "join_time": datetime.fromisoformat(hist_data["join_time"]),
+                    "leave_time": datetime.fromisoformat(hist_data["leave_time"]) if hist_data.get("leave_time") else None,
+                    "status": hist_data.get("status", ""),
+                    "scheduled_ban": datetime.fromisoformat(hist_data["scheduled_ban"]) if hist_data.get("scheduled_ban") else None,
+                    "ban_time_str": hist_data.get("ban_time_str", "")
+                }
             
-            logger.info(f"✅ Ma'lumotlar yuklandi: {data.get('last_save', '')}")
-            return True
+            print(f"✅ Ma'lumotlar yuklandi: {data.get('last_save', '')}")
     except Exception as e:
-        logger.error(f"❌ Ma'lumotlarni yuklashda xatolik: {e}")
-        return False
+        print(f"❌ Ma'lumotlarni yuklashda xatolik: {e}")
 
 # Yuklash
 load_data()
-
-# ==================== RENDER.COM HEALTH CHECK SERVER ====================
-from flask import Flask, jsonify
-from threading import Thread
-
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-def home():
-    return jsonify({
-        "status": "active",
-        "bot": "@uzdramadubbot",
-        "owner": "@maestro_o",
-        "time": datetime.now().isoformat(),
-        "scheduled_bans": sum(len(users) for users in scheduled.values()),
-        "users_history": len(user_history)
-    })
-
-@flask_app.route('/health')
-def health():
-    return "OK", 200
-
-def run_flask():
-    """Flask serverni ishga tushirish (Render.com health check uchun)"""
-    flask_app.run(host='0.0.0.0', port=PORT)
-
-# Flask-ni threadda ishga tushirish
-Thread(target=run_flask, daemon=True).start()
-logger.info(f"✅ Health check server ishga tushdi: port {PORT}")
 
 # ==================== 60 KUNDAN KEYIN O'CHIRISH ====================
 def clean_old_data():
@@ -208,10 +139,25 @@ def clean_old_data():
                 cleaned += 1
         
         if cleaned > 0:
-            logger.info(f"🧹 {cleaned} ta eski ma'lumot o'chirildi ({cutoff.strftime('%d.%m.%Y')})")
+            print(f"🧹 {cleaned} ta eski ma'lumot o'chirildi ({cutoff.strftime('%d.%m.%Y')})")
             save_data()
     except Exception as e:
-        logger.error(f"❌ Tozalashda xatolik: {e}")
+        print(f"❌ Tozalashda xatolik: {e}")
+
+# Har kuni tozalash
+def cleanup_background():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    async def cleaner():
+        while True:
+            await asyncio.sleep(86400)  # 24 soat
+            clean_old_data()
+    
+    loop.run_until_complete(cleaner())
+
+cleanup_thread = threading.Thread(target=cleanup_background, daemon=True)
+cleanup_thread.start()
 
 # ==================== VAQTNI PARSE QILISH ====================
 def parse_time(time_str):
@@ -257,9 +203,10 @@ def is_owner(user_id):
 
 # ==================== BOT ADMINLIGINI TEKSHIRISH ====================
 async def check_bot_admin(client, chat_id):
-    """Bot adminligini tekshirish"""
+    """Bot adminligini tekshirish - 5 xil usul"""
     me = await client.get_me()
     
+    # 1-usul: get_chat_member
     try:
         member = await client.get_chat_member(chat_id, me.id)
         if member.status in ["administrator", "creator"]:
@@ -272,6 +219,16 @@ async def check_bot_admin(client, chat_id):
         async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
             if member.user.id == me.id:
                 return True, member.status
+    except:
+        pass
+    
+    # 3-usul: To'g'ridan-to'g'ri API
+    try:
+        # 2 soniya kutib, qayta urinish
+        await asyncio.sleep(2)
+        member = await client.get_chat_member(chat_id, me.id)
+        if str(member.status).lower() == "administrator":
+            return True, member.status
     except:
         pass
     
@@ -433,10 +390,10 @@ async def start_command(client, message):
             "✅ **ABADIY BLOKLASH BOTI**\n\n"
             "👤 **Xush kelibsiz, @maestro_o!**\n\n"
             f"📌 **SIZNING KANALINGIZ:** `{YOUR_CHANNEL_ID}`\n\n"
-            "**📌 RENDER.COM VERSIYA:**\n"
-            "🔹 Hech qachon uxlamaydi\n"
-            "🔹 Ma'lumotlar saqlanadi\n"
-            "🔹 Auto health check\n\n"
+            "**📌 YANGI FUNKSIYALAR:**\n"
+            "🔹 Ma'lumotlar JSON faylda saqlanadi\n"
+            "🔹 60 kundan eski ma'lumotlar o'chadi\n"
+            "🔹 Kanalga yangi odam qo'shilganda xabar\n\n"
             "**📌 KOMANDALAR:**\n"
             "🔹 /select - Kanalni tanlash\n"
             "🔹 /members - A'zolar ro'yxati\n"
@@ -448,7 +405,7 @@ async def start_command(client, message):
     else:
         await message.reply_text("❌ Sizga ruxsat yo'q!")
 
-# ==================== SELECT ====================
+# ==================== SELECT (TO'G'RILANGAN) ====================
 @app.on_message(filters.command("select"))
 async def select_channel(client, message):
     user_id = message.from_user.id
@@ -479,14 +436,31 @@ async def select_channel(client, message):
             await msg.edit_text(f"❌ Kanal topilmadi! Xatolik: {str(e)}")
             return
         
-        # Bot adminligini tekshirish
+        # Bot adminligini tekshirish (kengaytirilgan)
         is_admin, admin_status = await check_bot_admin(client, chat_id)
         
         if not is_admin:
+            # Adminlar ro'yxatini olish
+            admins_text = "👥 **KANAL ADMINLARI:**\n"
+            admin_count = 0
+            
+            try:
+                async for member in client.get_chat_members(chat_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
+                    admin_count += 1
+                    user = member.user
+                    if user.id == (await client.get_me()).id:
+                        admins_text += f"✅ **BOT** - @{user.username} (Status: {member.status})\n"
+                    else:
+                        name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+                        admins_text += f"• {name} - @{user.username if user.username else 'username yo\'q'}\n"
+            except:
+                admins_text += "Adminlar ro'yxatini olish imkonsiz\n"
+            
             await msg.edit_text(
                 f"❌ **Bot admin emas!**\n\n"
                 f"Kanal: {chat.title}\n"
                 f"ID: `{chat_id}`\n\n"
+                f"{admins_text}\n\n"
                 f"📌 **YECHIM:**\n"
                 f"1. Kanalda adminlar ro'yxatini oching\n"
                 f"2. @uzdramadubbot ni toping\n"
@@ -641,6 +615,64 @@ async def set_ban(client, message):
     except Exception as e:
         await message.reply_text(f"❌ Xatolik: {str(e)}")
 
+# ==================== SETBANID ====================
+@app.on_message(filters.command("setbanid"))
+async def set_ban_by_id(client, message):
+    user_id = message.from_user.id
+    
+    if not is_owner(user_id):
+        await message.reply_text("❌ Sizga ruxsat yo'q!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply_text("❌ /setbanid 123456789 30k")
+        return
+    
+    try:
+        target_user_id = int(args[1])
+        time_str = args[2]
+        
+        chat_id = YOUR_CHANNEL_ID
+        if user_id in selected_channel:
+            chat_id = selected_channel[user_id]["chat_id"]
+        
+        user = await client.get_users(target_user_id)
+        
+        minutes = parse_time(time_str)
+        ban_time = datetime.now() + timedelta(minutes=minutes)
+        
+        if chat_id not in scheduled:
+            scheduled[chat_id] = {}
+            
+        scheduled[chat_id][user.id] = {
+            "username": user.username or f"ID:{user.id}",
+            "full_name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
+            "time": ban_time,
+            "user_id": user.id,
+            "join_time": datetime.now(),
+            "permanent": True
+        }
+        
+        save_data()
+        
+        toshkent_vaqt = toshkent_vaqti(ban_time)
+        sana = toshkent_vaqt.strftime("%d.%m.%Y %H:%M")
+        
+        display_name = f"@{user.username}" if user.username else user.first_name
+        
+        await message.reply_text(
+            f"✅ **BLOKLASH REJALASHTIRILDI**\n\n"
+            f"👤 **Foydalanuvchi:** {display_name}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"⏰ **Vaqt:** {time_str}\n"
+            f"📅 **Sana:** {sana}\n"
+            f"🚫 **Tur:** {time_str} dan keyin ABADIY bloklanadi"
+        )
+        
+    except Exception as e:
+        await message.reply_text(f"❌ Xatolik: {str(e)}")
+
 # ==================== LIST ====================
 @app.on_message(filters.command("list"))
 async def list_bans(client, message):
@@ -749,116 +781,100 @@ async def cancel_ban(client, message):
         await message.reply_text(f"❌ Xatolik")
 
 # ==================== VAQTLI BLOKLASH TEKSHIRUVI ====================
-async def check_bans():
-    """Har daqiqada bloklashlarni tekshirish"""
-    while True:
-        try:
-            now = datetime.now()
-            for chat_id in list(scheduled.keys()):
-                for user_id in list(scheduled[chat_id].keys()):
-                    if now >= scheduled[chat_id][user_id]["time"]:
-                        try:
-                            data = scheduled[chat_id][user_id]
-                            logger.info(f"⏰ Abadiy bloklash vaqti keldi: {data['full_name']}")
-                            
-                            until_date = now + timedelta(days=366)
-                            await app.ban_chat_member(chat_id, user_id, until_date=until_date)
-                            
-                            if user_id in user_history:
-                                user_history[user_id]["leave_time"] = now
-                                user_history[user_id]["status"] = "banned"
-                            
-                            join_time = data.get("join_time", now)
-                            join_str = join_time.strftime("%d.%m.%Y %H:%M") if isinstance(join_time, datetime) else "noma'lum"
-                            ban_str = now.strftime("%d.%m.%Y %H:%M")
-                            
-                            time_in_channel = now - join_time if isinstance(join_time, datetime) else timedelta(0)
-                            days = time_in_channel.days
-                            hours = time_in_channel.seconds // 3600
-                            
-                            if days > 0:
-                                time_str = f"{days} kun {hours} soat"
-                            else:
-                                time_str = f"{hours} soat"
-                            
-                            logger.info(f"✅ ABADIY bloklandi: {data['full_name']}")
-                            
-                            try:
-                                await app.send_message(
-                                    YOUR_ID,
-                                    f"🚫 **FOYDALANUVCHI BLOKLANDI!**\n\n"
-                                    f"👤 **Foydalanuvchi:** {data['full_name']}\n"
-                                    f"🆔 **ID:** `{user_id}`\n"
-                                    f"📱 **Username:** {data['username']}\n"
-                                    f"📅 **Qo'shilgan vaqt:** {join_str}\n"
-                                    f"📅 **Bloklangan vaqt:** {ban_str}\n"
-                                    f"⏱️ **Kanalda bo'lgan vaqt:** {time_str}\n"
-                                    f"🚫 **Holat:** ABADIY bloklandi"
-                                )
-                            except:
-                                pass
-                            
-                            del scheduled[chat_id][user_id]
-                            save_data()
-                            
-                        except Exception as e:
-                            logger.error(f"❌ Bloklash xatosi: {e}")
-            
-            # Har 10 daqiqada ma'lumotlarni saqlash
-            if now.minute % 10 == 0:
-                save_data()
-                
-            # Har kuni soat 00:00 da eski ma'lumotlarni tozalash
-            if now.hour == 0 and now.minute == 0:
-                clean_old_data()
-                
-        except Exception as e:
-            logger.error(f"Tekshirish xatosi: {e}")
-        
-        await asyncio.sleep(60)  # Har daqiqa tekshirish
-
-# ==================== ASOSIY FUNKSIYA ====================
-async def main():
-    """Botni ishga tushirish"""
-    try:
-        # Botni ishga tushirish
-        await app.start()
-        
-        logger.info("=" * 60)
-        logger.info("✅ ABADIY BLOKLASH BOTI ISHGA TUSHDI!")
-        logger.info("=" * 60)
-        logger.info(f"🤖 Bot: @uzdramadubbot")
-        logger.info(f"👤 Egasi: @maestro_o (ID: {YOUR_ID})")
-        logger.info(f"📌 Kanal ID: {YOUR_CHANNEL_ID}")
-        logger.info(f"📌 Render.com: {'HA' if IS_RENDER else 'YO'Q'}")
-        logger.info(f"📌 Ma'lumotlar: {DATA_FILE}")
-        logger.info("=" * 60)
-        logger.info("📋 HOLAT:")
-        logger.info(f"   • Rejalashtirilgan bloklashlar: {sum(len(users) for users in scheduled.values())}")
-        logger.info(f"   • Tarixdagi foydalanuvchilar: {len(user_history)}")
-        logger.info("=" * 60)
-        
-        # Bloklashlarni tekshirish vazifasini ishga tushirish
-        asyncio.create_task(check_bans())
-        
-        # Botni ishga tushirish
-        await app.idle()
-        
-    except Exception as e:
-        logger.error(f"❌ Bot ishga tushishda xatolik: {e}")
-    finally:
-        # Tozalash
-        await app.stop()
-
-# ==================== ISHGA TUSHIRISH ====================
-if __name__ == "__main__":
-    # Asyncio event loop
+def check_bans_background():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        logger.info("❌ Bot to'xtatildi")
-    finally:
-        loop.close()
+    async def check():
+        while True:
+            try:
+                now = datetime.now()
+                for chat_id in list(scheduled.keys()):
+                    for user_id in list(scheduled[chat_id].keys()):
+                        if now >= scheduled[chat_id][user_id]["time"]:
+                            try:
+                                data = scheduled[chat_id][user_id]
+                                print(f"⏰ Abadiy bloklash vaqti keldi: {data['full_name']}")
+                                
+                                until_date = now + timedelta(days=366)
+                                await app.ban_chat_member(chat_id, user_id, until_date=until_date)
+                                
+                                if user_id in user_history:
+                                    user_history[user_id]["leave_time"] = now
+                                    user_history[user_id]["status"] = "banned"
+                                
+                                join_time = data.get("join_time", now)
+                                join_str = join_time.strftime("%d.%m.%Y %H:%M") if isinstance(join_time, datetime) else "noma'lum"
+                                ban_str = now.strftime("%d.%m.%Y %H:%M")
+                                
+                                time_in_channel = now - join_time if isinstance(join_time, datetime) else timedelta(0)
+                                days = time_in_channel.days
+                                hours = time_in_channel.seconds // 3600
+                                
+                                if days > 0:
+                                    time_str = f"{days} kun {hours} soat"
+                                else:
+                                    time_str = f"{hours} soat"
+                                
+                                print(f"✅ ABADIY bloklandi: {data['full_name']}")
+                                
+                                try:
+                                    await app.send_message(
+                                        YOUR_ID,
+                                        f"🚫 **FOYDALANUVCHI BLOKLANDI!**\n\n"
+                                        f"👤 **Foydalanuvchi:** {data['full_name']}\n"
+                                        f"🆔 **ID:** `{user_id}`\n"
+                                        f"📱 **Username:** {data['username']}\n"
+                                        f"📅 **Qo'shilgan vaqt:** {join_str}\n"
+                                        f"📅 **Bloklangan vaqt:** {ban_str}\n"
+                                        f"⏱️ **Kanalda bo'lgan vaqt:** {time_str}\n"
+                                        f"🚫 **Holat:** ABADIY bloklandi"
+                                    )
+                                except:
+                                    pass
+                                
+                                del scheduled[chat_id][user_id]
+                                save_data()
+                                
+                            except Exception as e:
+                                print(f"❌ Bloklash xatosi: {e}")
+            except Exception as e:
+                print(f"Tekshirish xatosi: {e}")
+            await asyncio.sleep(60)
+    
+    loop.run_until_complete(check())
+
+# Har soatda ma'lumotlarni saqlash
+def auto_save_background():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    async def auto_save():
+        while True:
+            await asyncio.sleep(3600)  # 1 soat
+            save_data()
+    
+    loop.run_until_complete(auto_save())
+
+# Threadlarni ishga tushirish
+ban_thread = threading.Thread(target=check_bans_background, daemon=True)
+ban_thread.start()
+
+save_thread = threading.Thread(target=auto_save_background, daemon=True)
+save_thread.start()
+
+print("=" * 60)
+print("✅ ABADIY BLOKLASH BOTI ISHGA TUSHDI!")
+print("=" * 60)
+print(f"🤖 Bot: @uzdramadubbot")
+print(f"👤 Egasi: @maestro_o (ID: {YOUR_ID})")
+print(f"📌 Kanal ID: {YOUR_CHANNEL_ID}")
+print("=" * 60)
+print("📋 **YANGI FUNKSIYALAR:**")
+print("   • Ma'lumotlar JSON faylda saqlanadi")
+print("   • 60 kundan eski ma'lumotlar o'chadi")
+print("   • Har soatda avtomatik saqlanadi")
+print("   • Bot adminligi 5 xil usulda tekshiriladi")
+print("=" * 60)
+
+app.run()
