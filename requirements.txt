@@ -1,1 +1,4 @@
-pyrogram==2.0.106
+python-telegram-bot==20.7
+yt-dlp==2024.12.13
+pysrt==1.1.2
+aiohttp==3.9.1
