@@ -304,7 +304,9 @@ async def start_command(client, message):
         )
         return
     
-    # Admin panel (siz uchun)
+    if user_id in temp_data:
+        temp_data.pop(user_id, None)
+    
     if is_owner(user_id):
         my_channels = len([c for uid, c in user_channels.items() if uid == YOUR_ID])
         total_users = len(AUTHORIZED_USERS) - 1
@@ -320,7 +322,6 @@ async def start_command(client, message):
         await message.reply_text(text, reply_markup=get_main_menu_keyboard())
         return
     
-    # Oddiy foydalanuvchi
     if user_id in user_channels:
         channel = user_channels[user_id]
         text = f"✅ **SIZNING KANALINGIZ**\n\n"
@@ -338,7 +339,10 @@ async def start_command(client, message):
         ])
     else:
         text = "👋 **XUSH KELIBSIZ!**\n\n"
-        text += "Botdan foydalanish uchun kanalingizni qo'shing:"
+        text += "Botdan foydalanish uchun kanalingizni qo'shing:\n\n"
+        text += "1. '➕ Kanal qo'shish' tugmasini bosing\n"
+        text += "2. Kanal ID sini yozing\n"
+        text += "3. Test tugmasini bosing"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="add_channel")],
             [InlineKeyboardButton("🕐 Vaqt sozlash", callback_data="menu_time")]
@@ -387,7 +391,7 @@ async def bot_mention_group(client, message):
     else:
         await message.reply_text(f"❌ **Bot bu guruhda admin emas!**")
 
-# ==================== TEST KOMANDASI ====================
+# ==================== TEST KOMANDASI (ADMIN UCHUN) ====================
 @app.on_message(filters.command("test"))
 async def test_add_channel(client, message):
     user_id = message.from_user.id
@@ -509,9 +513,9 @@ async def handle_admin_input(client, message):
         await message.reply_text(f"❌ Xatolik: {str(e)}")
         temp_data.pop(user_id, None)
 
-# ==================== KANAL QO'SHISH (ID VA FORWARD) - TO'G'IRLANGAN ====================
+# ==================== KANAL ID QABUL QILISH (YANGI) ====================
 @app.on_message()
-async def handle_other_messages(client, message):
+async def handle_channel_id_input(client, message):
     if message.chat.type != enums.ChatType.PRIVATE:
         return
     
@@ -520,102 +524,56 @@ async def handle_other_messages(client, message):
     if not is_authorized(user_id):
         return
     
+    if user_id not in temp_data or temp_data[user_id].get("action") != "awaiting_channel_id":
+        return
+    
     if message.text and message.text.startswith('/'):
         return
     
-    # Forward qilingan xabar
-    if message.forward_from_chat:
-        chat_id = message.forward_from_chat.id
-        chat_title = message.forward_from_chat.title
-        
-        msg = await message.reply_text(f"⏳ Tekshirilmoqda: {chat_title}...")
-        
-        try:
-            chat = await client.get_chat(chat_id)
-            is_admin, status = await check_bot_admin(client, chat_id)
-            
-            if not is_admin:
-                await msg.edit_text(
-                    f"❌ **BOT ADMIN EMAS!**\n\n"
-                    f"📌 Kanal: {chat.title}\n"
-                    f"🆔 ID: `{chat_id}`\n\n"
-                    f"✅ Kanalda @uzdramadubbot yozib tekshiring"
-                )
-                return
-            
-            # Kanalni qo'shish
-            success = await add_channel_for_user(client, user_id, chat_id, chat.title)
-            
-            if success:
-                reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
-                await msg.edit_text(
-                    f"✅ **KANAL MUVOFFAQIYATLI QO'SHILDI!**\n\n"
-                    f"📌 {chat.title}\n"
-                    f"🆔 `{chat_id}`\n"
-                    f"👥 A'zolar: {chat.members_count if hasattr(chat, 'members_count') else '?'}\n\n"
-                    f"Endi /start ni bosing",
-                    reply_markup=reply_markup
-                )
-            else:
-                await msg.edit_text("❌ Kanal qo'shilmadi! Noma'lum xatolik.")
-            
-            return
-            
-        except Exception as e:
-            await msg.edit_text(f"❌ Xatolik: {str(e)}")
-            return
-    
-    # Oddiy matn (kanal ID)
     if not message.text:
+        await message.reply_text("❌ Iltimos, kanal ID sini yuboring!")
         return
     
     text = message.text.strip()
     
-    if (text.startswith('-') and text[1:].isdigit()) or text.isdigit():
+    if not ((text.startswith('-') and text[1:].isdigit()) or text.isdigit()):
+        await message.reply_text(
+            "❌ **Noto'g'ri format!**\n\n"
+            "Kanal ID siz quyidagicha bo'lishi kerak:\n"
+            "• `-100123456789` (minus bilan)\n"
+            "• Yoki `123456789` (faqat raqam)"
+        )
+        return
+    
+    try:
+        chat_id = int(text)
+        
         try:
-            chat_id = int(text)
-            msg = await message.reply_text("⏳ Tekshirilmoqda...")
-            
-            try:
-                chat = await client.get_chat(chat_id)
-            except Exception as e:
-                await msg.edit_text(f"❌ **KANAL TOPILMADI!**\nID: `{chat_id}`\nXato: {e}")
-                return
-            
-            is_admin, status = await check_bot_admin(client, chat_id)
-            
-            if not is_admin:
-                await msg.edit_text(
-                    f"❌ **BOT ADMIN EMAS!**\n\n"
-                    f"📌 Kanal: {chat.title}\n"
-                    f"🆔 ID: `{chat_id}`\n\n"
-                    f"✅ Kanalda @uzdramadubbot yozib tekshiring"
-                )
-                return
-            
-            # Kanalni qo'shish
-            success = await add_channel_for_user(client, user_id, chat_id, chat.title)
-            
-            if success:
-                members = chat.members_count if hasattr(chat, 'members_count') else "?"
-                reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
-                
-                await msg.edit_text(
-                    f"✅ **KANAL MUVOFFAQIYATLI QO'SHILDI!**\n\n"
-                    f"📌 {chat.title}\n"
-                    f"🆔 `{chat_id}`\n"
-                    f"👥 A'zolar: {members}\n\n"
-                    f"Endi /start ni bosing",
-                    reply_markup=reply_markup
-                )
-            else:
-                await msg.edit_text("❌ Kanal qo'shilmadi! Noma'lum xatolik.")
-            
-            return
-            
+            chat = await client.get_chat(chat_id)
+            chat_title = chat.title
         except Exception as e:
-            await message.reply_text(f"❌ Xatolik: {str(e)}")
+            await message.reply_text(f"❌ **KANAL TOPILMADI!**\nID: `{chat_id}`\nXato: {e}")
             return
+        
+        temp_data[user_id]["chat_id"] = chat_id
+        temp_data[user_id]["chat_title"] = chat_title
+        temp_data[user_id]["action"] = "channel_id_received"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ TEST - Kanalni qo'shish", callback_data="test_add_channel")],
+            [InlineKeyboardButton("🔙 Bekor qilish", callback_data="my_channels_list")]
+        ])
+        
+        await message.reply_text(
+            f"✅ **ID qabul qilindi!**\n\n"
+            f"📌 Kanal: {chat_title}\n"
+            f"🆔 ID: `{chat_id}`\n\n"
+            f"Endi quyidagi tugmani bosing:",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        await message.reply_text(f"❌ Xatolik: {str(e)}")
 
 # ==================== YANGI A'ZO QO'SHILGANDA ====================
 @app.on_chat_member_updated()
@@ -888,17 +846,74 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
         await callback_query.answer("✅ Barcha ma'lumotlar yangilandi!")
         return
     
-    # ===== KANAL QO'SHISH =====
+    # ===== KANAL QO'SHISH (1-QADAM: ID SO'RASH) =====
     if data == "add_channel":
         await callback_query.message.edit_text(
             "➕ **KANAL QO'SHISH**\n\n"
-            "Ikkita usul:\n\n"
-            "1. Kanal ID sini yozing: `-100123456789`\n"
-            "2. Kanaldan xabar forward qiling",
+            "1-qadam: Kanal ID sini yozing:\n"
+            "Misol: `-100123456789`\n\n"
+            "2-qadam: ID yozganingizdan keyin, men sizga test tugmasini beraman",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
             ])
         )
+        temp_data[user_id] = {"action": "awaiting_channel_id"}
+        await callback_query.answer()
+        return
+    
+    # ===== TEST TUGMASI ORQALI KANAL QO'SHISH =====
+    if data == "test_add_channel":
+        if user_id not in temp_data or temp_data[user_id].get("action") != "channel_id_received":
+            await callback_query.answer("Avval kanal ID sini yozing!", show_alert=True)
+            return
+        
+        chat_id = temp_data[user_id].get("chat_id")
+        chat_title = temp_data[user_id].get("chat_title")
+        
+        if not chat_id:
+            await callback_query.answer("Kanal ID topilmadi!", show_alert=True)
+            return
+        
+        await callback_query.message.edit_text("⏳ **Kanal qo'shilmoqda...**")
+        
+        try:
+            is_admin, status = await check_bot_admin(client, chat_id)
+            
+            if not is_admin:
+                await callback_query.message.edit_text(
+                    f"❌ **BOT ADMIN EMAS!**\n\n"
+                    f"📌 Kanal: {chat_title}\n"
+                    f"🆔 ID: `{chat_id}`\n\n"
+                    f"✅ Kanalda @uzdramadubbot yozib tekshiring",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
+                    ])
+                )
+                return
+            
+            success = await add_channel_for_user(client, user_id, chat_id, chat_title)
+            
+            if success:
+                temp_data.pop(user_id, None)
+                reply_markup = get_main_menu_keyboard() if is_owner(user_id) else None
+                await callback_query.message.edit_text(
+                    f"✅ **KANAL MUVOFFAQIYATLI QO'SHILDI!**\n\n"
+                    f"📌 {chat_title}\n"
+                    f"🆔 `{chat_id}`\n\n"
+                    f"Endi /start ni bosing",
+                    reply_markup=reply_markup
+                )
+            else:
+                await callback_query.message.edit_text(
+                    "❌ **KANAL QO'SHILMADI!**\n\nNoma'lum xatolik yuz berdi.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Orqaga", callback_data="my_channels_list")]
+                    ])
+                )
+                
+        except Exception as e:
+            await callback_query.message.edit_text(f"❌ Xatolik: {str(e)}")
+        
         await callback_query.answer()
         return
     
@@ -1612,6 +1627,7 @@ if __name__ == "__main__":
     print("   • 👑 Admin panel - ruxsat berganlar")
     print("   • 🔄 Yangilash - barcha ma'lumotlar")
     print("   • 📢 Kanalda @uzdramadubbot yozing - tekshirish")
+    print("   • ✅ 2-QADAMLI KANAL QO'SHISH (ID + TEST)")
     print("=" * 60)
     
     ban_thread = threading.Thread(target=run_ban_check, daemon=True)
