@@ -240,17 +240,24 @@ async def translate_with_deepseek(text: str, target_lang: str = "uzbek") -> Opti
 
 async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                   srt_file: str, video_title: str) -> Tuple[Optional[str], Optional[Update]]:
-    """Progress bar bilan tarjima qilish (10 sekundda yangilanadi)"""
+    """Progress bar bilan tarjima qilish (10 sekundda yangilanadi) - TO'XTATISH TUGMASI BILAN"""
     
     user_id = update.effective_user.id
     
-    # Progress xabar yuborish
+    # To'xtatish tugmasi bilan progress xabar yuborish
+    keyboard = [[InlineKeyboardButton("❌ To'xtatish", callback_data="cancel_translate")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     progress_msg = await context.bot.send_message(
         chat_id=user_id,
         text="🧠 *Tarjima boshlandi*\n\n"
              "`[□□□□□□□□□□]` 0%",
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        reply_markup=reply_markup
     )
+    
+    # To'xtatilganlik flagi
+    context.user_data['cancelled'] = False
     
     try:
         subs = pysrt.open(srt_file)
@@ -262,6 +269,15 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
         last_update = time.time()
         
         for i, sub in enumerate(subs):
+            # To'xtatish tekshirish
+            if context.user_data.get('cancelled', False):
+                await progress_msg.edit_text(
+                    "⏹️ *Tarjima to'xtatildi!*\n\n"
+                    "Hech qanday fayl saqlanmadi.",
+                    parse_mode='Markdown'
+                )
+                return None, progress_msg
+            
             # Tarjima qilish
             translated_text = await translate_with_deepseek(sub.text, "uzbek")
             
@@ -295,13 +311,18 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
                 progress_bar = f"[{'█' * filled}{'□' * empty}]"
                 
                 try:
+                    # To'xtatish tugmasi bilan yangilash
+                    keyboard = [[InlineKeyboardButton("❌ To'xtatish", callback_data="cancel_translate")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
                     await progress_msg.edit_text(
                         f"🧠 *Tarjima qilinmoqda...*\n\n"
                         f"{progress_bar} {percent}%\n"
                         f"⏱️ Qolgan vaqt: ~{time_text}\n"
                         f"📊 Qator: {i+1}/{total}\n"
                         f"🔄 Yangilanadi: har 10 sekundda",
-                        parse_mode='Markdown'
+                        parse_mode='Markdown',
+                        reply_markup=reply_markup
                     )
                     last_update = current_time
                 except Exception as e:
@@ -574,9 +595,9 @@ async def download_subtitle(url: str, lang_code: str, lang_info: dict) -> Option
         logger.error(f"Subtitr yuklash xatolik: {e}")
         return None
 
-# ==================== START KOMANDASI ====================
+# ==================== START KOMANDASI - YANGILANGAN ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """START KOMANDASI"""
+    """START KOMANDASI - BLOCKLANGANLARNI TOZALASH VA YANGI XABAR BILAN"""
     try:
         user_id = update.effective_user.id
         username = update.effective_user.username or "noma'lum"
@@ -584,6 +605,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name = update.effective_user.last_name or ""
         
         logger.info(f"🔥 START: {user_id} (@{username})")
+        
+        # BLOCKLANGAN USERLARNI TOZALASH (MUHIM!)
+        # Foydalanuvchi ma'lumotlarini tozalash
+        if 'user_data' in context.bot_data and user_id in context.bot_data['user_data']:
+            del context.bot_data['user_data'][user_id]
         
         # Adminmi tekshirish
         if user_id == ADMIN_ID:
@@ -620,12 +646,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
         else:
-            # To'g'irlangan xabar
+            # Yangi xabar - so'zma-so'z talab qilingandek
             await update.message.reply_text(
                 f"❌ *Ruxsat yo'q*\n\n"
-                f"Botdan foydalanish uchun @maestro_o ga murojaat qiling. "
-                f"Rozi bo'lsa, quyidagi ID raqamingizni yuboring. "
-                f"Admin sizning ID raqamingiz orqali ruxsat beradi.\n\n"
+                f"Botdan foydalanish uchun @maestro_o ga murojaat qiling va rozi bo'lsa ID raqamingizni yuboring. "
+                f"U ID raqamni sizni botdan foydalanishingizda ruxsat berish uchun ishlatadi.\n\n"
                 f"🆔 *ID raqamingiz:* `{user_id}`",
                 parse_mode='Markdown'
             )
@@ -633,6 +658,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Start xatolik: {e}")
         await update.message.reply_text("⚠️ Xatolik yuz berdi. Admin @maestro_o ga murojaat qiling.")
+
+# ==================== TARJIMANI TO'XTATISH ====================
+async def cancel_translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tarjimani to'xtatish"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    # To'xtatish flagini o'rnatish
+    context.user_data['cancelled'] = True
+    
+    await query.edit_message_text(
+        "⏹️ *Tarjima to'xtatilmoqda...*\n\n"
+        "Iltimos, biroz kuting...",
+        parse_mode='Markdown'
+    )
 
 # ==================== ADMIN MENYU ====================
 async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1259,7 +1301,7 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.edit_message_text("❌ Fayl topilmadi. Avval subtitr yuklang!")
             return
         
-        # Progress bar bilan tarjima qilish
+        # Progress bar bilan tarjima qilish (to'xtatish tugmasi bilan)
         translated_file, progress_msg = await translate_with_progress(
             update, context, srt_file, video_title
         )
@@ -1309,13 +1351,15 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 pass
             
         else:
-            keyboard = [[InlineKeyboardButton("🔙 Asosiy menyu", callback_data="back_to_main")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                "❌ Tarjima qilishda xatolik yuz berdi.",
-                reply_markup=reply_markup
-            )
+            # To'xtatilgan bo'lsa yoki xatolik bo'lsa
+            if not context.user_data.get('cancelled', False):
+                keyboard = [[InlineKeyboardButton("🔙 Asosiy menyu", callback_data="back_to_main")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    "❌ Tarjima qilishda xatolik yuz berdi.",
+                    reply_markup=reply_markup
+                )
 
 # ==================== ASOSIY XABAR HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1365,6 +1409,7 @@ def main():
         application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_"))
         application.add_handler(CallbackQueryHandler(subtitle_callback, pattern="^sub_"))
         application.add_handler(CallbackQueryHandler(translate_callback, pattern="^translate_"))
+        application.add_handler(CallbackQueryHandler(cancel_translate_callback, pattern="^cancel_translate$"))
         
         # Xabar handlerlar
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -1373,7 +1418,7 @@ def main():
         print("🚀 Bot ishga tushmoqda...")
         print(f"👑 Admin ID: {ADMIN_ID}")
         print(f"📊 Barcha formatlar qo'llab-quvvatlanadi: SRT, VTT, ASS, SSA, SBV")
-        print(f"✅ Progress bar: har 10 sekundda yangilanadi")
+        print(f"✅ Progress bar: har 10 sekundda yangilanadi (To'xtatish tugmasi bilan)")
         
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
