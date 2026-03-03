@@ -18,12 +18,14 @@ from telegram.ext import (
 import yt_dlp
 
 # ==================== SOZLAMALAR ====================
-# TOKENLAR TO'G'RIDAN-TO'G'RI YOZILDI
 BOT_TOKEN = "8763594610:AAE2UV2zYNUFk3HKEEKaWOZYo_XRsvvACOQ"
 DEEPSEEK_API_KEY = "sk-37d52e756c5b43ee9d7f7042844277cb"
 ADMIN_ID = 1700341163
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+# Avtomatik tarjimalarda faqat shu tillarni ko'rsatish
+ALLOWED_AUTO_LANGUAGES = ['en', 'uz', 'ru', 'zh']  # Ingliz, O'zbek, Rus, Xitoy
 
 # Conversation states
 WAITING_FOR_YOUTUBE = 1
@@ -301,9 +303,17 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
                     remaining_seconds = int(avg_time_per_item * remaining_items)
                     remaining_min = remaining_seconds // 60
                     remaining_sec = remaining_seconds % 60
+                    
+                    # Umumiy vaqtni ham ko'rsatish
+                    total_seconds = int(avg_time_per_item * total)
+                    total_min = total_seconds // 60
+                    total_sec = total_seconds % 60
+                    total_time_text = f"{total_min}m {total_sec}s"
+                    
                     time_text = f"{remaining_min}m {remaining_sec}s"
                 else:
                     time_text = "hisoblanmoqda..."
+                    total_time_text = "hisoblanmoqda..."
                 
                 # Chiroyli progress bar
                 filled = percent // 10
@@ -319,6 +329,7 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
                         f"🧠 *Tarjima qilinmoqda...*\n\n"
                         f"{progress_bar} {percent}%\n"
                         f"⏱️ Qolgan vaqt: ~{time_text}\n"
+                        f"⏳ Umumiy vaqt: ~{total_time_text}\n"
                         f"📊 Qator: {i+1}/{total}\n"
                         f"🔄 Yangilanadi: har 10 sekundda",
                         parse_mode='Markdown',
@@ -333,7 +344,17 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
                 await asyncio.sleep(1)
         
         # Tugaganini bildirish
-        await progress_msg.edit_text("✅ *Tarjima tugadi! Fayl tayyorlanmoqda...*", parse_mode='Markdown')
+        total_time = int(time.time() - start_time)
+        total_min = total_time // 60
+        total_sec = total_time % 60
+        
+        await progress_msg.edit_text(
+            f"✅ *Tarjima tugadi!*\n\n"
+            f"⏱️ {total_min}m {total_sec}s vaqt ketdi\n"
+            f"📊 {total} ta qator tarjima qilindi\n\n"
+            f"📁 Fayl tayyorlanmoqda...",
+            parse_mode='Markdown'
+        )
         
         # Faylni saqlash
         output_path = srt_file.replace('.srt', f'_uz.srt')
@@ -478,9 +499,9 @@ def convert_to_srt(input_file: str, input_format: str) -> Optional[str]:
         logger.error(f"Konvertatsiya xatolik: {e}")
         return None
 
-# ==================== YOUTUBE SUBTITR OLISH ====================
+# ==================== YOUTUBE SUBTITR OLISH (FILTRLANGAN) ====================
 async def get_youtube_subtitles(url: str) -> Tuple[Optional[str], dict, Optional[dict]]:
-    """YouTube dan subtitr olish"""
+    """YouTube dan subtitr olish - filtr bilan"""
     
     ydl_opts = {
         'skip_download': True,
@@ -502,6 +523,7 @@ async def get_youtube_subtitles(url: str) -> Tuple[Optional[str], dict, Optional
             
             available_langs = {}
             
+            # 1. QO'LDA YUKLANGAN SUBTITRLAR - HAMMASI CHIQADI
             for lang, sub_data in subtitles.items():
                 if sub_data:
                     formats = []
@@ -518,21 +540,24 @@ async def get_youtube_subtitles(url: str) -> Tuple[Optional[str], dict, Optional
                         'formats': formats
                     }
             
+            # 2. AVTOMATIK SUBTITRLAR - FAQAT RUXSAT ETILGAN TILLAR
             for lang, sub_data in automatic_captions.items():
                 if sub_data and lang not in available_langs:
-                    formats = []
-                    for sub in sub_data:
-                        ext = sub.get('ext', 'unknown')
-                        if ext not in formats:
-                            formats.append(ext)
-                    
-                    lang_name = get_language_name(lang)
-                    available_langs[lang] = {
-                        'name': lang_name + ' (auto)', 
-                        'type': 'auto',
-                        'data': sub_data,
-                        'formats': formats
-                    }
+                    # Faqat ruxsat etilgan tillarni qo'shish
+                    if lang in ALLOWED_AUTO_LANGUAGES:
+                        formats = []
+                        for sub in sub_data:
+                            ext = sub.get('ext', 'unknown')
+                            if ext not in formats:
+                                formats.append(ext)
+                        
+                        lang_name = get_language_name(lang)
+                        available_langs[lang] = {
+                            'name': lang_name + ' (auto)', 
+                            'type': 'auto',
+                            'data': sub_data,
+                            'formats': formats
+                        }
             
             return video_title, available_langs, info
             
@@ -595,9 +620,9 @@ async def download_subtitle(url: str, lang_code: str, lang_info: dict) -> Option
         logger.error(f"Subtitr yuklash xatolik: {e}")
         return None
 
-# ==================== START KOMANDASI - YANGILANGAN ====================
+# ==================== START KOMANDASI ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """START KOMANDASI - BLOCKLANGANLARNI TOZALASH VA YANGI XABAR BILAN"""
+    """START KOMANDASI"""
     try:
         user_id = update.effective_user.id
         username = update.effective_user.username or "noma'lum"
@@ -606,8 +631,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"🔥 START: {user_id} (@{username})")
         
-        # BLOCKLANGAN USERLARNI TOZALASH (MUHIM!)
-        # Foydalanuvchi ma'lumotlarini tozalash
+        # BLOCKLANGAN USERLARNI TOZALASH
         if 'user_data' in context.bot_data and user_id in context.bot_data['user_data']:
             del context.bot_data['user_data'][user_id]
         
@@ -646,7 +670,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
         else:
-            # Yangi xabar - so'zma-so'z talab qilingandek
             await update.message.reply_text(
                 f"❌ *Ruxsat yo'q*\n\n"
                 f"Botdan foydalanish uchun @maestro_o ga murojaat qiling va rozi bo'lsa ID raqamingizni yuboring. "
@@ -724,13 +747,11 @@ async def admin_manage_callback(update: Update, context: ContextTypes.DEFAULT_TY
     for uid, uname, fname, lname, expires in users:
         days_left = (datetime.datetime.fromisoformat(expires) - datetime.datetime.now()).days
         
-        # Ism familya ham ko'rinadi
         full_name = f"{fname} {lname}".strip() or "Ismsiz"
         display_name = f"{full_name} (@{uname})" if uname != "noma'lum" else full_name
         
         text += f"🆔 {uid} | {display_name} | {days_left} kun qoldi\n"
         
-        # Profilga o'tish tugmasi
         keyboard.append([
             InlineKeyboardButton(
                 f"👤 {full_name[:15]} - Profil", 
@@ -1020,7 +1041,6 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = query.data
     
     if data == "main_youtube":
-        # Orqaga qaytish tugmasi
         keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -1033,7 +1053,6 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data['state'] = WAITING_FOR_YOUTUBE
         
     elif data == "main_srt":
-        # Orqaga qaytish tugmasi
         keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -1118,7 +1137,6 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     video_title, available_langs, info = await get_youtube_subtitles(url)
     
     if not available_langs:
-        # Orqaga qaytish tugmasi
         keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -1417,8 +1435,10 @@ def main():
         
         print("🚀 Bot ishga tushmoqda...")
         print(f"👑 Admin ID: {ADMIN_ID}")
-        print(f"📊 Barcha formatlar qo'llab-quvvatlanadi: SRT, VTT, ASS, SSA, SBV")
+        print(f"📊 Qo'lda yuklangan subtitrlar: HAMMASI")
+        print(f"📊 Avtomatik subtitrlar: FAQAT Ingliz, O'zbek, Rus, Xitoy")
         print(f"✅ Progress bar: har 10 sekundda yangilanadi (To'xtatish tugmasi bilan)")
+        print(f"⏱️ Umumiy vaqt ham ko'rsatiladi")
         
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
