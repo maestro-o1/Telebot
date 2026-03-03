@@ -24,8 +24,8 @@ ADMIN_ID = 1700341163
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# Avtomatik tarjimalarda faqat shu tillarni ko'rsatish
-ALLOWED_AUTO_LANGUAGES = ['en', 'uz', 'ru', 'zh']  # Ingliz, O'zbek, Rus, Xitoy
+# Avtomatik tarjimalarda shu tillarni ko'rsatish
+ALLOWED_AUTO_LANGUAGES = ['en', 'uz', 'ru', 'zh', 'ko']  # Ingliz, O'zbek, Rus, Xitoy, Koreys
 
 # Conversation states
 WAITING_FOR_YOUTUBE = 1
@@ -202,8 +202,8 @@ def get_language_name(lang_code: str) -> str:
     return languages.get(lang_code, lang_code.upper())
 
 # ==================== DEEPSEEK TARJIMA ====================
-async def translate_with_deepseek(text: str, target_lang: str = "uzbek") -> Optional[str]:
-    """DeepSeek orqali matn tarjima qilish"""
+async def translate_with_deepseek(text: str) -> Optional[str]:
+    """DeepSeek orqali matnni O'ZBEK tiliga tarjima qilish"""
     
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -215,7 +215,7 @@ async def translate_with_deepseek(text: str, target_lang: str = "uzbek") -> Opti
         "messages": [
             {
                 "role": "system",
-                "content": f"Sen professional tarjimonsan. Matnni {target_lang} tiliga tarjima qil. Faqat tarjima qilingan matnni qaytar, hech qanday izohsiz."
+                "content": "Sen professional tarjimonsan. Matnni O'ZBEK tiliga tarjima qil. Faqat tarjima qilingan matnni qaytar, hech qanday izohsiz."
             },
             {
                 "role": "user",
@@ -273,7 +273,8 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
                 await progress_msg.edit_text("⏹️ *Tarjima to'xtatildi*", parse_mode='Markdown')
                 return None, progress_msg
             
-            translated_text = await translate_with_deepseek(sub.text, "uzbek")
+            # O'ZBEK TILIGA TARJIMA
+            translated_text = await translate_with_deepseek(sub.text)
             
             if translated_text:
                 sub.text = translated_text
@@ -498,7 +499,7 @@ async def get_youtube_subtitles(url: str) -> Tuple[Optional[str], dict, Optional
                         'formats': formats
                     }
             
-            # AVTOMATIK - FAQAT 4 TA TIL
+            # AVTOMATIK - FAQAT 5 TA TIL (Ingliz, O'zbek, Rus, Xitoy, Koreys)
             for lang, sub_data in automatic_captions.items():
                 if sub_data and lang not in available_langs:
                     if lang in ALLOWED_AUTO_LANGUAGES:
@@ -938,12 +939,12 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         keyboard = [
-            [InlineKeyboardButton("🧠 Tarjima", callback_data="translate_srt")],
+            [InlineKeyboardButton("🧠 AI tarjima (O'zbek)", callback_data="translate_srt")],
             [InlineKeyboardButton("🔙 Menyu", callback_data="back_to_main")]
         ]
         await context.bot.send_message(
             user_id,
-            "✅ Tayyor! Tarjima qilish uchun tugmani bosing:",
+            "✅ Tayyor! O'zbek tiliga tarjima qilish uchun tugmani bosing:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         
@@ -979,7 +980,7 @@ async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user_file(user_id, temp_filename, document.file_name, "Yuklangan")
     
     keyboard = [
-        [InlineKeyboardButton("🧠 Tarjima", callback_data="translate_srt")],
+        [InlineKeyboardButton("🧠 AI tarjima (O'zbek)", callback_data="translate_srt")],
         [InlineKeyboardButton("🔙 Menyu", callback_data="back_to_main")]
     ]
     
@@ -1020,8 +1021,8 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await context.bot.send_document(
                 user_id,
                 f,
-                filename=f"uzbek_{os.path.basename(srt_file)}",
-                caption="✅ Tarjima tayyor!"
+                filename=f"uzbekcha_{os.path.basename(srt_file)}",
+                caption="✅ Tarjima tayyor! (O'zbek tilida)"
             )
         
         await progress_msg.delete()
@@ -1097,6 +1098,8 @@ def main():
         
         print("✅ Bot ishga tushdi!")
         print(f"👑 Admin: {ADMIN_ID}")
+        print(f"🌐 Avtomatik tillar: Ingliz, O'zbek, Rus, Xitoy, Koreys")
+        print(f"🧩 Tarjima: HAR DOIM O'zbek tiliga")
         
         app.run_polling(drop_pending_updates=True)
         
