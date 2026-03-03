@@ -1,5 +1,5 @@
 python-telegram-bot==20.7
-yt-dlp==2024.12.18
+yt-dlp==2026.3.2
 pysrt==1.1.2
 aiohttp==3.9.1
 requests==2.31.0
