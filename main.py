@@ -8,6 +8,7 @@ import aiohttp
 import asyncio
 import re
 import time
+import requests
 from typing import Dict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -37,102 +38,146 @@ logger = logging.getLogger(__name__)
 # ==================== MA'LUMOTLAR BAZASI ====================
 def init_db():
     """SQLite bazasini yaratish"""
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    
-    # Ruxsatlar jadvali
-    c.execute('''CREATE TABLE IF NOT EXISTS permissions
-                 (user_id INTEGER PRIMARY KEY,
-                  username TEXT,
-                  expires_at TIMESTAMP,
-                  granted_by INTEGER,
-                  granted_at TIMESTAMP)''')
-    
-    # Foydalanuvchi ma'lumotlari jadvali
-    c.execute('''CREATE TABLE IF NOT EXISTS user_data
-                 (user_id INTEGER PRIMARY KEY,
-                  current_file TEXT,
-                  video_title TEXT,
-                  original_lang TEXT)''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        # Ruxsatlar jadvali
+        c.execute('''CREATE TABLE IF NOT EXISTS permissions
+                     (user_id INTEGER PRIMARY KEY,
+                      username TEXT,
+                      expires_at TIMESTAMP,
+                      granted_by INTEGER,
+                      granted_at TIMESTAMP)''')
+        
+        # Foydalanuvchi ma'lumotlari jadvali
+        c.execute('''CREATE TABLE IF NOT EXISTS user_data
+                     (user_id INTEGER PRIMARY KEY,
+                      current_file TEXT,
+                      video_title TEXT,
+                      original_lang TEXT)''')
+        
+        conn.commit()
+        conn.close()
+        logger.info("✅ Baza muvaffaqiyatli yaratildi")
+    except Exception as e:
+        logger.error(f"❌ Baza xatolik: {e}")
 
 def add_permission(user_id, username, days):
     """Foydalanuvchiga ruxsat berish"""
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    
-    expires_at = datetime.datetime.now() + datetime.timedelta(days=days)
-    
-    c.execute('''INSERT OR REPLACE INTO permissions 
-                 (user_id, username, expires_at, granted_by, granted_at)
-                 VALUES (?, ?, ?, ?, ?)''',
-              (user_id, username, expires_at, ADMIN_ID, datetime.datetime.now()))
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        expires_at = datetime.datetime.now() + datetime.timedelta(days=days)
+        
+        c.execute('''INSERT OR REPLACE INTO permissions 
+                     (user_id, username, expires_at, granted_by, granted_at)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (user_id, username, expires_at, ADMIN_ID, datetime.datetime.now()))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ruxsat berish xatolik: {e}")
+        return False
 
 def remove_permission(user_id):
     """Ruxsatni olib tashlash"""
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM permissions WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        c.execute('DELETE FROM permissions WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ruxsat o'chirish xatolik: {e}")
+        return False
 
 def check_permission(user_id):
-    """Ruxsatni tekshirish - TO'G'RILANGAN"""
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    
-    c.execute('SELECT expires_at FROM permissions WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()  # MUHIM: CONNECTION NI YOPISH
-    
-    if result:
-        expires_at = datetime.datetime.fromisoformat(result[0])
-        if expires_at > datetime.datetime.now():
-            return True, expires_at
-    
-    return False, None
+    """Ruxsatni tekshirish"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('SELECT expires_at FROM permissions WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if result:
+            expires_at = datetime.datetime.fromisoformat(result[0])
+            if expires_at > datetime.datetime.now():
+                return True, expires_at
+        
+        return False, None
+    except Exception as e:
+        logger.error(f"Ruxsat tekshirish xatolik: {e}")
+        return False, None
 
 def get_all_users():
     """Barcha ruxsat berilgan foydalanuvchilarni olish"""
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    
-    c.execute('''SELECT user_id, username, expires_at 
-                 FROM permissions 
-                 ORDER BY expires_at''')
-    users = c.fetchall()
-    
-    conn.close()
-    return users
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT user_id, username, expires_at 
+                     FROM permissions 
+                     ORDER BY expires_at''')
+        users = c.fetchall()
+        
+        conn.close()
+        return users
+    except Exception as e:
+        logger.error(f"Foydalanuvchilar ro'yxatini olish xatolik: {e}")
+        return []
 
 def save_user_file(user_id, file_path, video_title, original_lang=None):
     """Foydalanuvchi faylini saqlash"""
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    
-    c.execute('''INSERT OR REPLACE INTO user_data 
-                 (user_id, current_file, video_title, original_lang)
-                 VALUES (?, ?, ?, ?)''',
-              (user_id, file_path, video_title, original_lang))
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('''INSERT OR REPLACE INTO user_data 
+                     (user_id, current_file, video_title, original_lang)
+                     VALUES (?, ?, ?, ?)''',
+                  (user_id, file_path, video_title, original_lang))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Fayl saqlash xatolik: {e}")
+        return False
 
 def get_user_file(user_id):
     """Foydalanuvchi faylini olish"""
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    
-    c.execute('SELECT current_file, video_title, original_lang FROM user_data WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    
-    conn.close()
-    return result if result else (None, None, None)
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('SELECT current_file, video_title, original_lang FROM user_data WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if result:
+            file_path = result[0]
+            if file_path and os.path.exists(file_path):
+                return result
+            else:
+                # Fayl yo'q bo'lsa, bazadan o'chirish
+                conn = sqlite3.connect('bot_data.db')
+                c = conn.cursor()
+                c.execute('DELETE FROM user_data WHERE user_id = ?', (user_id,))
+                conn.commit()
+                conn.close()
+                return None, None, None
+        else:
+            return None, None, None
+    except Exception as e:
+        logger.error(f"Fayl olish xatolik: {e}")
+        return None, None, None
 
 # ==================== TIL NOMLARI ====================
 def get_language_name(lang_code):
@@ -403,7 +448,7 @@ def convert_to_srt(input_file, input_format):
 
 # ==================== YOUTUBE SUBTITR OLISH ====================
 async def get_youtube_subtitles(url):
-    """YouTube dan subtitr olish - LOG BILAN"""
+    """YouTube dan subtitr olish"""
     
     ydl_opts = {
         'skip_download': True,
@@ -411,20 +456,17 @@ async def get_youtube_subtitles(url):
         'writeautomaticsub': True,
         'subtitleslangs': ['all'],
         'subtitlesformat': 'srt/vtt/ass/ssa/sbv',
-        'quiet': False,  # LOG UCHUN FALSE
+        'quiet': True,
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             logger.info(f"YouTube ma'lumot olinmoqda: {url}")
             info = ydl.extract_info(url, download=False)
-            logger.info(f"Video topildi: {info.get('title')}")
+            video_title = info.get('title', 'Noma\'lum video')
             
             subtitles = info.get('subtitles', {})
             automatic_captions = info.get('automatic_captions', {})
-            
-            logger.info(f"Subtitrlar: {list(subtitles.keys())}")
-            logger.info(f"Avtomatik: {list(automatic_captions.keys())}")
             
             available_langs = {}
             
@@ -523,49 +565,59 @@ async def download_subtitle(url, lang_code, lang_info):
 
 # ==================== START KOMANDASI ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "noma'lum"
-    
-    if user_id == ADMIN_ID:
-        keyboard = [
-            [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_menu")],
-            [InlineKeyboardButton("📋 Ruxsatlarni boshqarish", callback_data="admin_manage")],
-            [InlineKeyboardButton("🎬 Botdan foydalanish", callback_data="user_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    """START KOMANDASI - TO'G'RILANGAN"""
+    try:
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "noma'lum"
         
-        await update.message.reply_text(
-            "👑 *Admin panel*\n\nNima qilmoqchisiz?",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-        return
-    
-    has_perm, expires = check_permission(user_id)
-    
-    if has_perm:
-        keyboard = [
-            [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
-            [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        logger.info(f"🔥 START: {user_id} (@{username})")
         
-        days_left = (expires - datetime.datetime.now()).days
-        await update.message.reply_text(
-            f"✅ *Xush kelibsiz!*\n\n"
-            f"🕒 Ruxsatingiz: {days_left} kun qoldi\n\n"
-            f"Tanlang:",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-    else:
-        await update.message.reply_text(
-            f"❌ *Ruxsat yo'q*\n\n"
-            f"Botdan foydalanish uchun @maestro_o ga murojaat qiling.\n"
-            f"Rozi bo'lsa, ID raqamingizni yuboring. Admin sizni qo'shish uchun shu ID dan foydalanadi.\n\n"
-            f"🆔 Sizning ID: `{user_id}`",
-            parse_mode='Markdown'
-        )
+        # Adminmi tekshirish
+        if user_id == ADMIN_ID:
+            keyboard = [
+                [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_menu")],
+                [InlineKeyboardButton("📋 Ruxsatlarni boshqarish", callback_data="admin_manage")],
+                [InlineKeyboardButton("🎬 Botdan foydalanish", callback_data="user_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "👑 *Admin panel*\n\nNima qilmoqchisiz?",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Ruxsatni tekshirish
+        has_perm, expires = check_permission(user_id)
+        
+        if has_perm:
+            keyboard = [
+                [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
+                [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            days_left = (expires - datetime.datetime.now()).days
+            await update.message.reply_text(
+                f"✅ *Xush kelibsiz!*\n\n"
+                f"🕒 Ruxsatingiz: {days_left} kun qoldi\n\n"
+                f"Tanlang:",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ *Ruxsat yo'q*\n\n"
+                f"Botdan foydalanish uchun @maestro_o ga murojaat qiling.\n"
+                f"Rozi bo'lsa, ID raqamingizni yuboring.\n\n"
+                f"🆔 Sizning ID: `{user_id}`",
+                parse_mode='Markdown'
+            )
+            
+    except Exception as e:
+        logger.error(f"Start xatolik: {e}")
+        await update.message.reply_text("⚠️ Xatolik yuz berdi. Admin @maestro_o ga murojaat qiling.")
 
 # ==================== ADMIN MENYU ====================
 async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -575,6 +627,7 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Bu faqat admin uchun!")
         return
     
     await query.edit_message_text(
@@ -591,6 +644,7 @@ async def admin_manage_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Bu faqat admin uchun!")
         return
     
     users = get_all_users()
@@ -631,24 +685,26 @@ async def remove_user_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Bu faqat admin uchun!")
         return
     
     data = query.data
     target_id = int(data.replace("remove_", ""))
     
-    remove_permission(target_id)
-    
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text="❌ *Ruxsatingiz bekor qilindi!*\n\n"
-                 "Admin sizning ruxsatingizni olib tashladi. "
-                 "Qayta ruxsat olish uchun @maestro_o ga murojaat qiling.",
-            parse_mode='Markdown'
-        )
-        user_notified = "Xabar yuborildi ✅"
-    except:
-        user_notified = "Xabar yuborilmadi ⚠️"
+    if remove_permission(target_id):
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="❌ *Ruxsatingiz bekor qilindi!*\n\n"
+                     "Admin sizning ruxsatingizni olib tashladi. "
+                     "Qayta ruxsat olish uchun @maestro_o ga murojaat qiling.",
+                parse_mode='Markdown'
+            )
+            user_notified = "Xabar yuborildi ✅"
+        except:
+            user_notified = "Xabar yuborilmadi ⚠️"
+    else:
+        user_notified = "Ruxsat o'chirilmadi ⚠️"
     
     users = get_all_users()
     
@@ -729,6 +785,7 @@ async def days_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Bu faqat admin uchun!")
         return
     
     data = query.data
@@ -749,20 +806,21 @@ async def days_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data in days_map:
         days = days_map[data]
         
-        add_permission(target_id, "user", days)
-        
-        try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text=f"✅ *Ruxsat berildi!*\n\n"
-                     f"Sizga {days} kun muddat bilan botdan foydalanish ruxsati berildi.\n"
-                     f"/start ni bosing va ishlatishni boshlang.",
-                parse_mode='Markdown'
-            )
-            user_notified = "Xabar yuborildi ✅"
-        except Exception as e:
-            user_notified = "Xabar yuborilmadi (foydalanuvchi botni blocklagan) ⚠️"
-            logger.error(f"Xabar yuborilmadi {target_id}: {e}")
+        if add_permission(target_id, "user", days):
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=f"✅ *Ruxsat berildi!*\n\n"
+                         f"Sizga {days} kun muddat bilan botdan foydalanish ruxsati berildi.\n"
+                         f"/start ni bosing va ishlatishni boshlang.",
+                    parse_mode='Markdown'
+                )
+                user_notified = "Xabar yuborildi ✅"
+            except Exception as e:
+                user_notified = "Xabar yuborilmadi (foydalanuvchi botni blocklagan) ⚠️"
+                logger.error(f"Xabar yuborilmadi {target_id}: {e}")
+        else:
+            user_notified = "Ruxsat berilmadi ⚠️"
         
         keyboard = [[InlineKeyboardButton("🔙 Admin panel", callback_data="back_to_admin")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -787,6 +845,10 @@ async def user_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     user_id = update.effective_user.id
     
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Bu faqat admin uchun!")
+        return
+    
     keyboard = [
         [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
         [InlineKeyboardButton("📄 SRT fayl yuborish", callback_data="main_srt")],
@@ -809,6 +871,7 @@ async def back_to_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     
     if user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Bu faqat admin uchun!")
         return
     
     keyboard = [
@@ -831,6 +894,7 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     user_id = update.effective_user.id
     
+    # Ruxsatni tekshirish
     has_perm, expires = check_permission(user_id)
     if not has_perm and user_id != ADMIN_ID:
         await query.edit_message_text("❌ Ruxsat yo'q!")
@@ -875,7 +939,8 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not available_langs:
         await progress_msg.edit_text(
             "😕 *Subtitr topilmadi!*\n\n"
-            "Boshqa drama/video yuboring, buning subtitr fayli yo'q.",
+            "Boshqa drama/video yuboring, buning subtitr fayli yo'q.\n\n"
+            "💡 Agar muammo davom etsa, admin @maestro_o ga murojaat qiling.",
             parse_mode='Markdown'
         )
         context.user_data['state'] = None
@@ -1123,36 +1188,55 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ==================== ASOSIY FUNKSIYA ====================
 def main():
-    """Botni ishga tushirish"""
+    """Botni ishga tushirish - TO'G'RILANGAN"""
     
-    init_db()
-    
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Handlerlar
-    application.add_handler(CommandHandler("start", start))
-    
-    # Callback handlerlar
-    application.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="^admin_menu$"))
-    application.add_handler(CallbackQueryHandler(admin_manage_callback, pattern="^admin_manage$"))
-    application.add_handler(CallbackQueryHandler(remove_user_callback, pattern="^remove_"))
-    application.add_handler(CallbackQueryHandler(user_menu_callback, pattern="^user_menu$"))
-    application.add_handler(CallbackQueryHandler(back_to_admin_callback, pattern="^back_to_admin$"))
-    application.add_handler(CallbackQueryHandler(days_callback, pattern="^days_"))
-    application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_"))
-    application.add_handler(CallbackQueryHandler(subtitle_callback, pattern="^sub_"))
-    application.add_handler(CallbackQueryHandler(translate_callback, pattern="^translate_"))
-    
-    # Xabar handlerlar
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_message))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_youtube_url))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_srt_file))
-    
-    print("🤖 Bot ishga tushdi...")
-    print(f"👑 Admin ID: {ADMIN_ID}")
-    print(f"📊 Barcha formatlar qo'llab-quvvatlanadi: SRT, VTT, ASS, SSA, SBV")
-    print(f"✅ Progress bar: har 20 sekundda yangilanadi")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # 1. Eski botlarni tozalash
+        print("⏳ Eski botlarni tozalash...")
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        requests.get(url, params={"offset": -1, "timeout": 1})
+        time.sleep(2)
+        
+        # 2. Bazani yaratish
+        init_db()
+        
+        # 3. Botni yaratish
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # 4. Handlerlar
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="^admin_menu$"))
+        application.add_handler(CallbackQueryHandler(admin_manage_callback, pattern="^admin_manage$"))
+        application.add_handler(CallbackQueryHandler(remove_user_callback, pattern="^remove_"))
+        application.add_handler(CallbackQueryHandler(user_menu_callback, pattern="^user_menu$"))
+        application.add_handler(CallbackQueryHandler(back_to_admin_callback, pattern="^back_to_admin$"))
+        application.add_handler(CallbackQueryHandler(days_callback, pattern="^days_"))
+        application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_"))
+        application.add_handler(CallbackQueryHandler(subtitle_callback, pattern="^sub_"))
+        application.add_handler(CallbackQueryHandler(translate_callback, pattern="^translate_"))
+        
+        # Xabar handlerlar
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_message))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_youtube_url))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_srt_file))
+        
+        # 5. Botni ishga tushirish
+        print("🚀 Bot ishga tushmoqda...")
+        print(f"👑 Admin ID: {ADMIN_ID}")
+        print(f"📊 Barcha formatlar qo'llab-quvvatlanadi: SRT, VTT, ASS, SSA, SBV")
+        print(f"✅ Progress bar: har 20 sekundda yangilanadi")
+        
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,  # MUHIM!
+            pool_timeout=30
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Main xatolik: {e}")
+        print(f"❌ Xatolik: {e}")
+        time.sleep(5)
+        main()  # Qayta ishga tushirish
 
 if __name__ == '__main__':
     main()
