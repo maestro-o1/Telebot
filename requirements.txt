@@ -1,7 +1,2 @@
-python-telegram-bot==20.8
+python-telegram-bot==20.7
 yt-dlp
-pysrt
-aiohttp
-requests==2.31.0
-urllib3==2.2.3
-charset-normalizer==3.3.2
