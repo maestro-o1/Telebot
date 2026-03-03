@@ -1,11 +1,26 @@
 import os
+import os
+import logging
 import tempfile
-import subprocess
+import sqlite3
+import datetime
+import pysrt
+import aiohttp
+import asyncio
+import re
+import time
+from typing import Optional, Tuple, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    filters, CallbackQueryHandler, ContextTypes, ConversationHandler
+)
+import yt_dlp
 
-BOT_TOKEN = os.getenv(""8763594610:AAE2UV2zYNUFk3HKEEKaWOZYo_XRsvvACOQ"")
+# ==================== SOZLAMALAR ====================
 
+BOT_TOKEN = "8763594610:AAE2UV2zYNUFk3HKEEKaWOZYo_XRsvvACOQ"
+ADMIN_ID = 1700341163
 # START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
