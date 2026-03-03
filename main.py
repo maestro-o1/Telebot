@@ -24,9 +24,6 @@ ADMIN_ID = 1700341163
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# Avtomatik tarjimalarda shu tillarni ko'rsatish
-ALLOWED_AUTO_LANGUAGES = ['en', 'uz', 'ru', 'zh', 'ko']  # Ingliz, O'zbek, Rus, Xitoy, Koreys
-
 # Conversation states
 WAITING_FOR_YOUTUBE = 1
 WAITING_FOR_SRT = 2
@@ -64,7 +61,7 @@ def init_db():
         
         conn.commit()
         conn.close()
-        logger.info("✅ Baza muvaffaqiyatli yaratildi")
+        logger.info("✅ Baza yaratildi")
     except Exception as e:
         logger.error(f"❌ Baza xatolik: {e}")
 
@@ -193,15 +190,10 @@ def get_language_name(lang_code: str) -> str:
         'es': 'Ispan tili', 'fr': 'Fransuz tili', 'de': 'Nemis tili', 'it': 'Italyan tili',
         'ja': 'Yapon tili', 'ko': 'Koreys tili', 'zh': 'Xitoy tili', 'pt': 'Portugal tili',
         'id': 'Indonez tili', 'ms': 'Malay tili', 'th': 'Tay tili', 'vi': 'Vyetnam tili',
-        'bn': 'Bengal tili', 'pl': 'Polyak tili', 'uk': 'Ukrain tili', 'ro': 'Rumin tili',
-        'nl': 'Golland tili', 'el': 'Grek tili', 'hu': 'Venger tili', 'sv': 'Shved tili',
-        'cs': 'Chex tili', 'fi': 'Fin tili', 'da': 'Daniya tili', 'he': 'Ibroniycha',
-        'no': 'Norveg tili', 'sk': 'Slovak tili', 'hr': 'Xorvat tili', 'sr': 'Serb tili',
-        'bg': 'Bolg\'ar tili', 'lt': 'Litva tili', 'lv': 'Latish tili', 'et': 'Eston tili',
     }
     return languages.get(lang_code, lang_code.upper())
 
-# ==================== DEEPSEEK TARJIMA (TO'G'IRLANGAN) ====================
+# ==================== DEEPSEEK TARJIMA ====================
 async def translate_with_deepseek(text: str) -> Optional[str]:
     """DeepSeek orqali matnni O'ZBEK tiliga tarjima qilish"""
     
@@ -215,7 +207,7 @@ async def translate_with_deepseek(text: str) -> Optional[str]:
         "messages": [
             {
                 "role": "system",
-                "content": "Sen professional tarjimonsan. Matnni O'ZBEK tiliga tarjima qil. Faqat tarjima qilingan matnni qaytar, hech qanday izohsiz. Agar matn allaqachon o'zbek tilida bo'lsa, o'zini qaytar."
+                "content": "Sen professional tarjimonsan. Matnni O'ZBEK tiliga tarjima qil. Faqat tarjima qilingan matnni qaytar."
             },
             {
                 "role": "user",
@@ -231,36 +223,23 @@ async def translate_with_deepseek(text: str) -> Optional[str]:
             async with session.post(DEEPSEEK_API_URL, headers=headers, json=payload) as resp:
                 if resp.status == 200:
                     result = await resp.json()
-                    translated = result['choices'][0]['message']['content'].strip()
-                    logger.info(f"Tarjima qilindi: {text[:30]}... -> {translated[:30]}...")
-                    return translated
+                    return result['choices'][0]['message']['content'].strip()
                 else:
-                    error_text = await resp.text()
-                    logger.error(f"Tarjima xatolik: {resp.status} - {error_text}")
                     return None
     except Exception as e:
-        logger.error(f"Tarjima exception: {e}")
+        logger.error(f"Tarjima xatolik: {e}")
         return None
 
-async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                                  srt_file: str, video_title: str) -> Tuple[Optional[str], Optional[Update]]:
-    """Progress bar bilan tarjima qilish"""
+async def translate_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE, srt_file: str, video_title: str):
+    """SRT faylni tarjima qilish"""
     
     user_id = update.effective_user.id
     
-    # Progress xabar yuborish
-    keyboard = [[InlineKeyboardButton("❌ To'xtatish", callback_data="cancel_translate")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     progress_msg = await context.bot.send_message(
         chat_id=user_id,
-        text="🧠 *Tarjima boshlandi (O'zbek tiliga)*\n\n"
-             "`[□□□□□□□□□□]` 0%",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
+        text="🧠 *Tarjima boshlandi (O'zbek tiliga)*\n\n`[□□□□□□□□□□]` 0%",
+        parse_mode='Markdown'
     )
-    
-    context.user_data['cancelled'] = False
     
     try:
         subs = pysrt.open(srt_file)
@@ -268,58 +247,30 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
         translated_subs = []
         
         start_time = time.time()
-        last_update = time.time()
         
         for i, sub in enumerate(subs):
-            if context.user_data.get('cancelled', False):
-                await progress_msg.edit_text("⏹️ *Tarjima to'xtatildi*", parse_mode='Markdown')
-                return None, progress_msg
-            
-            # O'ZBEK TILIGA TARJIMA
             translated_text = await translate_with_deepseek(sub.text)
             
             if translated_text:
                 sub.text = translated_text
             else:
                 sub.text = f"[?] {sub.text}"
-                logger.warning(f"Qator {i+1} tarjima qilinmadi: {sub.text[:50]}")
             
             translated_subs.append(sub)
             
-            current_time = time.time()
-            if current_time - last_update >= 10 or i == total - 1:
+            # Har 20 qatorda progressni yangilash
+            if (i + 1) % 20 == 0 or i == total - 1:
                 percent = int((i + 1) / total * 100)
-                elapsed = int(current_time - start_time)
-                
                 filled = percent // 10
                 empty = 10 - filled
                 progress_bar = f"[{'█' * filled}{'□' * empty}]"
                 
-                # Qolgan vaqtni hisoblash
-                if i > 0:
-                    remaining = int((elapsed / (i + 1)) * (total - i - 1))
-                    remaining_min = remaining // 60
-                    remaining_sec = remaining % 60
-                    time_text = f"{remaining_min}m {remaining_sec}s"
-                else:
-                    time_text = "?"
-                
-                try:
-                    await progress_msg.edit_text(
-                        f"🧠 *O'zbek tiliga tarjima qilinmoqda...*\n\n"
-                        f"{progress_bar} {percent}%\n"
-                        f"⏱️ {elapsed} sekund\n"
-                        f"⌛ Qolgan: ~{time_text}\n"
-                        f"📊 Qator: {i+1}/{total}",
-                        parse_mode='Markdown',
-                        reply_markup=reply_markup
-                    )
-                    last_update = current_time
-                except Exception as e:
-                    logger.error(f"Progress xatolik: {e}")
-            
-            if (i + 1) % 5 == 0:
-                await asyncio.sleep(0.5)
+                await progress_msg.edit_text(
+                    f"🧠 *Tarjima qilinmoqda...*\n\n"
+                    f"{progress_bar} {percent}%\n"
+                    f"📊 {i+1}/{total} qator",
+                    parse_mode='Markdown'
+                )
         
         # Faylni saqlash
         output_path = srt_file.replace('.srt', f'_ozbek.srt')
@@ -329,28 +280,20 @@ async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_
         new_subs.save(output_path, encoding='utf-8')
         
         total_time = int(time.time() - start_time)
-        total_min = total_time // 60
-        total_sec = total_time % 60
         
         await progress_msg.edit_text(
             f"✅ *Tarjima tugadi!*\n"
-            f"⏱️ {total_min}m {total_sec}s\n"
-            f"📊 {total} ta qator\n"
-            f"🌐 O'zbek tiliga tarjima qilindi",
+            f"⏱️ {total_time} sekund\n"
+            f"📊 {total} ta qator",
             parse_mode='Markdown'
         )
         
-        # Tekshirish: birinchi 5 qatorni logga yozish
-        logger.info(f"Tarjima namunasi:")
-        for i in range(min(5, len(translated_subs))):
-            logger.info(f"  {i+1}: {translated_subs[i].text[:50]}")
-        
-        return output_path, progress_msg
+        return output_path
         
     except Exception as e:
-        logger.error(f"Tarjima jarayonida xatolik: {e}")
-        await progress_msg.edit_text(f"❌ Xatolik: {str(e)[:50]}")
-        return None, progress_msg
+        logger.error(f"Tarjima xatolik: {e}")
+        await progress_msg.edit_text("❌ Tarjima qilishda xatolik")
+        return None
 
 # ==================== SUBTITR FORMATLARINI O'GIRISH ====================
 def vtt_to_srt(vtt_content: str) -> str:
@@ -482,7 +425,7 @@ def convert_to_srt(input_file: str, input_format: str) -> Optional[str]:
         return None
 
 # ==================== YOUTUBE SUBTITR OLISH ====================
-async def get_youtube_subtitles(url: str) -> Tuple[Optional[str], dict, Optional[dict]]:
+async def get_youtube_subtitles(url: str):
     """YouTube dan subtitr olish"""
     
     ydl_opts = {
@@ -496,59 +439,49 @@ async def get_youtube_subtitles(url: str) -> Tuple[Optional[str], dict, Optional
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"YouTube ma'lumot olinmoqda: {url}")
             info = ydl.extract_info(url, download=False)
-            video_title = info.get('title', 'Noma\'lum video')
+            video_title = info.get('title', 'Video')
             
             subtitles = info.get('subtitles', {})
-            automatic_captions = info.get('automatic_captions', {})
+            automatic = info.get('automatic_captions', {})
             
-            available_langs = {}
+            available = {}
             
-            # HAMMA QO'LDA YUKLANGANLAR
-            for lang, sub_data in subtitles.items():
-                if sub_data:
-                    formats = []
-                    for sub in sub_data:
-                        ext = sub.get('ext', 'unknown')
-                        if ext not in formats:
-                            formats.append(ext)
-                    
-                    lang_name = get_language_name(lang)
-                    available_langs[lang] = {
-                        'name': lang_name, 
+            # 1. QO'LDA YUKLANGANLAR - HAMMASI
+            for lang, data in subtitles.items():
+                if data:
+                    name = get_language_name(lang)
+                    available[lang] = {
+                        'name': name,
                         'type': 'manual',
-                        'formats': formats
+                        'data': data
                     }
+                    logger.info(f"Qo'lda yuklangan: {lang} - {name}")
             
-            # AVTOMATIK - FAQAT 5 TA TIL
-            for lang, sub_data in automatic_captions.items():
-                if sub_data and lang not in available_langs:
-                    if lang in ALLOWED_AUTO_LANGUAGES:
-                        formats = []
-                        for sub in sub_data:
-                            ext = sub.get('ext', 'unknown')
-                            if ext not in formats:
-                                formats.append(ext)
-                        
-                        lang_name = get_language_name(lang)
-                        available_langs[lang] = {
-                            'name': lang_name + ' (auto)', 
+            # 2. AVTO GENERATED - FAQAT O'zbek, Ingliz, Xitoy
+            allowed_auto = ['uz', 'en', 'zh']
+            for lang, data in automatic.items():
+                if data and lang not in available:
+                    if lang in allowed_auto:
+                        name = get_language_name(lang)
+                        available[lang] = {
+                            'name': f"{name} (avto)",
                             'type': 'auto',
-                            'formats': formats
+                            'data': data
                         }
+                        logger.info(f"Avto generated: {lang} - {name}")
             
-            return video_title, available_langs, info
+            return video_title, available
             
     except Exception as e:
         logger.error(f"YouTube xatolik: {e}")
-        return None, {}, None
+        return None, {}
 
 async def download_subtitle(url: str, lang_code: str, lang_info: dict) -> Optional[str]:
     """Subtitrni yuklab olish"""
     
-    with tempfile.NamedTemporaryFile(suffix='.srt', delete=False) as tmp_file:
-        temp_filename = tmp_file.name
+    with tempfile.NamedTemporaryFile(suffix='.srt', delete=False) as tmp:
+        temp_filename = tmp.name
     
     try:
         ydl_opts = {
@@ -593,12 +526,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """START KOMANDASI"""
     try:
         user_id = update.effective_user.id
-        username = update.effective_user.username or "noma'lum"
-        
-        logger.info(f"🔥 START: {user_id}")
-        
-        # STATE ni tozalash
-        context.user_data.clear()
         
         # Adminmi tekshirish
         if user_id == ADMIN_ID:
@@ -624,28 +551,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             days_left = (expires - datetime.datetime.now()).days
             await update.message.reply_text(
-                f"✅ Xush kelibsiz! ({days_left} kun qoldi)\n\nTanlang:",
+                f"✅ Xush kelibsiz! ({days_left} kun qoldi)",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
-            # TO'G'RI XABAR
             await update.message.reply_text(
                 f"❌ Ruxsat yo'q\n\n"
-                f"Botdan foydalanish uchun @maestro_o ga murojaat qiling. "
-                f"Rozi bo'lsa, quyidagi ID raqamingizni yuboring.\n\n"
-                f"🆔 ID: {user_id}"
+                f"Botdan foydalanish uchun @maestro_o ga murojaat qiling.\n"
+                f"ID: {user_id}"
             )
             
     except Exception as e:
         logger.error(f"Start xatolik: {e}")
-        await update.message.reply_text("⚠️ Xatolik. Admin @maestro_o ga murojaat qiling.")
-
-# ==================== TARJIMANI TO'XTATISH ====================
-async def cancel_translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data['cancelled'] = True
-    await query.edit_message_text("⏹️ To'xtatildi")
+        await update.message.reply_text("⚠️ Xatolik yuz berdi.")
 
 # ==================== ADMIN MENYU ====================
 async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -779,10 +697,7 @@ async def days_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if add_permission(target_id, target_username, target_first_name, target_last_name, days):
             try:
-                await context.bot.send_message(
-                    target_id,
-                    f"✅ Ruxsat berildi! {days} kun"
-                )
+                await context.bot.send_message(target_id, f"✅ Ruxsat berildi! {days} kun")
                 msg = "✅ Ruxsat berildi"
             except:
                 msg = "✅ Ruxsat berildi (xabar bormadi)"
@@ -842,7 +757,6 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         context.user_data['state'] = WAITING_FOR_YOUTUBE
-        logger.info(f"User {user_id} YouTube holatiga o'tdi")
         
     elif query.data == "main_srt":
         keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]]
@@ -851,7 +765,6 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         context.user_data['state'] = WAITING_FOR_SRT
-        logger.info(f"User {user_id} SRT holatiga o'tdi")
 
 # ==================== ORQAGA QAYTISH ====================
 async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -860,9 +773,6 @@ async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     user_id = update.effective_user.id
     context.user_data['state'] = None
-    context.user_data.pop('video_url', None)
-    context.user_data.pop('video_title', None)
-    context.user_data.pop('langs', None)
     
     if user_id == ADMIN_ID:
         keyboard = [
@@ -885,13 +795,9 @@ async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ==================== YOUTUBE HAVOLA (TO'G'IRLANGAN) ====================
+# ==================== YOUTUBE HAVOLA ====================
 async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    # State ni tekshirish
-    current_state = context.user_data.get('state')
-    logger.info(f"YouTube handler: state={current_state}, user={update.effective_user.id}")
-    
-    if current_state != WAITING_FOR_YOUTUBE:
+    if context.user_data.get('state') != WAITING_FOR_YOUTUBE:
         return False
     
     user_id = update.effective_user.id
@@ -904,32 +810,29 @@ async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     msg = await update.message.reply_text("⏳ Video tekshirilmoqda...")
     
-    video_title, available_langs, _ = await get_youtube_subtitles(url)
+    video_title, available = await get_youtube_subtitles(url)
     
-    if not available_langs:
+    if not available:
         await msg.edit_text("❌ Subtitr topilmadi")
         context.user_data['state'] = None
         return True
     
     keyboard = []
-    for lang_code, lang_info in available_langs.items():
+    for lang_code, lang_info in available.items():
         button_text = f"{lang_info['name']}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"sub_{lang_code}")])
     
     keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")])
     
     await msg.edit_text(
-        f"📹 *{video_title[:50]}*\n\n"
-        f"📌 {len(available_langs)} ta subtitr topildi:\n\n"
-        f"Tanlang:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        f"📹 {video_title}\n\n{len(available)} ta subtitr:\n\nTanlang:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
     context.user_data['video_url'] = url
     context.user_data['video_title'] = video_title
-    context.user_data['langs'] = available_langs
-    context.user_data['state'] = None  # State ni tozalash
+    context.user_data['langs'] = available
+    context.user_data['state'] = None
     
     return True
 
@@ -955,12 +858,12 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     langs = context.user_data.get('langs', {})
     
     if not url or lang_code not in langs:
-        await query.edit_message_text("❌ Xatolik: ma'lumotlar yo'qolgan. Qaytadan urinib ko'ring.")
+        await query.edit_message_text("❌ Xatolik yuz berdi")
         return
     
     lang_info = langs[lang_code]
     
-    await query.edit_message_text(f"⏳ {lang_info['name']} yuklanmoqda...")
+    await query.edit_message_text(f"⏳ Yuklanmoqda...")
     
     srt_file = await download_subtitle(url, lang_code, lang_info)
     
@@ -976,18 +879,18 @@ async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         keyboard = [
-            [InlineKeyboardButton("🧠 O'zbek tiliga tarjima", callback_data="translate_srt")],
+            [InlineKeyboardButton("🧠 AI tarjima (O'zbek)", callback_data="translate_srt")],
             [InlineKeyboardButton("🔙 Menyu", callback_data="back_to_main")]
         ]
         await context.bot.send_message(
             user_id,
-            "✅ Subtitr tayyor! Endi O'zbek tiliga tarjima qilish uchun tugmani bosing:",
+            "✅ Fayl tayyor! Tarjima qilish uchun tugmani bosing:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         
         await query.delete_message()
     else:
-        await query.edit_message_text("❌ Subtitr yuklab olishda xatolik")
+        await query.edit_message_text("❌ Yuklab olishda xatolik")
 
 # ==================== SRT FAYL ====================
 async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1017,18 +920,18 @@ async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user_file(user_id, temp_filename, document.file_name, "Yuklangan")
     
     keyboard = [
-        [InlineKeyboardButton("🧠 O'zbek tiliga tarjima", callback_data="translate_srt")],
+        [InlineKeyboardButton("🧠 AI tarjima (O'zbek)", callback_data="translate_srt")],
         [InlineKeyboardButton("🔙 Menyu", callback_data="back_to_main")]
     ]
     
     await update.message.reply_text(
-        f"✅ {document.file_name} qabul qilindi!\n\nEndi O'zbek tiliga tarjima qilish uchun tugmani bosing:",
+        f"✅ {document.file_name} qabul qilindi!",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
     context.user_data['state'] = None
 
-# ==================== TARJIMA (TO'G'IRLANGAN) ====================
+# ==================== TARJIMA ====================
 async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1043,25 +946,17 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if query.data != "translate_srt":
         return
     
-    srt_file, video_title, original_lang = get_user_file(user_id)
+    srt_file, video_title, _ = get_user_file(user_id)
     
     if not srt_file or not os.path.exists(srt_file):
-        await query.edit_message_text("❌ Fayl topilmadi. Avval subtitr yuklang.")
+        await query.edit_message_text("❌ Fayl topilmadi")
         return
     
-    # Tarjima boshlanishi
     await query.edit_message_text("⏳ Tarjima boshlanmoqda...")
     
-    translated_file, progress_msg = await translate_with_progress(
-        update, context, srt_file, video_title
-    )
+    translated_file = await translate_srt_file(update, context, srt_file, video_title)
     
     if translated_file and os.path.exists(translated_file):
-        # Fayl borligini tekshirish
-        file_size = os.path.getsize(translated_file)
-        logger.info(f"Tarjima fayli: {translated_file}, hajmi: {file_size} bayt")
-        
-        # Faylni yuborish
         with open(translated_file, 'rb') as f:
             await context.bot.send_document(
                 user_id,
@@ -1070,10 +965,6 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 caption="✅ Tarjima tayyor! (O'zbek tilida)"
             )
         
-        # Progress xabarni o'chirish
-        await progress_msg.delete()
-        
-        # Menyu chiqarish
         if user_id == ADMIN_ID:
             keyboard = [
                 [InlineKeyboardButton("🎬 YouTube", callback_data="main_youtube")],
@@ -1088,50 +979,41 @@ async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         await context.bot.send_message(
             user_id,
-            "✨ Yana nima qilamiz?",
+            "✨ Yana?",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         
-        # Fayllarni o'chirish
         try:
             os.remove(translated_file)
             os.remove(srt_file)
-            logger.info("Vaqtinchalik fayllar o'chirildi")
-        except Exception as e:
-            logger.error(f"Fayllarni o'chirishda xatolik: {e}")
+        except:
+            pass
     else:
-        if not context.user_data.get('cancelled', False):
-            await progress_msg.edit_text("❌ Tarjima qilishda xatolik yuz berdi.")
+        await query.edit_message_text("❌ Tarjima qilishda xatolik")
 
 # ==================== XABAR HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Admin xabarlarini tekshirish
     if await handle_admin_message(update, context):
         return
     
-    # YouTube havolani tekshirish
     if await handle_youtube_url(update, context):
         return
     
-    # Agar hech narsa bo'lmasa
     if context.user_data.get('state') is None:
-        await update.message.reply_text("❌ Iltimos, /start ni bosing.")
+        await update.message.reply_text("❌ /start ni bosing")
 
 # ==================== MAIN ====================
 def main():
     try:
         print("⏳ Ishga tushmoqda...")
         
-        # Bazani yaratish
         init_db()
         
-        # Bot
         app = Application.builder().token(BOT_TOKEN).build()
         
         # Handlerlar
         app.add_handler(CommandHandler("start", start))
         
-        # Callbacklar
         app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="^admin_menu$"))
         app.add_handler(CallbackQueryHandler(admin_manage_callback, pattern="^admin_manage$"))
         app.add_handler(CallbackQueryHandler(remove_user_callback, pattern="^remove_"))
@@ -1142,17 +1024,14 @@ def main():
         app.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_"))
         app.add_handler(CallbackQueryHandler(subtitle_callback, pattern="^sub_"))
         app.add_handler(CallbackQueryHandler(translate_callback, pattern="^translate_"))
-        app.add_handler(CallbackQueryHandler(cancel_translate_callback, pattern="^cancel_translate$"))
         
-        # Xabarlar
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_srt_file))
         
         print("✅ Bot ishga tushdi!")
         print(f"👑 Admin: {ADMIN_ID}")
-        print(f"🌐 Avtomatik tillar: Ingliz, O'zbek, Rus, Xitoy, Koreys")
-        print(f"🧩 Tarjima: HAR DOIM O'zbek tiliga")
-        print(f"📁 Fayllar: vaqtinchalik fayllar tozalanadi")
+        print(f"📌 Qo'lda yuklanganlar: HAMMASI")
+        print(f"📌 Avto generated: O'zbek, Ingliz, Xitoy")
         
         app.run_polling(drop_pending_updates=True)
         
