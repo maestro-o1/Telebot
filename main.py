@@ -8,190 +8,1175 @@ import aiohttp
 import asyncio
 import re
 import time
+from typing import Optional, Tuple, List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, 
-    filters, CallbackQueryHandler, ContextTypes
+    Application, CommandHandler, MessageHandler,
+    filters, CallbackQueryHandler, ContextTypes, ConversationHandler
 )
 import yt_dlp
 
 # ==================== SOZLAMALAR ====================
+
 BOT_TOKEN = "8763594610:AAE2UV2zYNUFk3HKEEKaWOZYo_XRsvvACOQ"
 DEEPSEEK_API_KEY = "sk-37d52e756c5b43ee9d7f7042844277cb"
 ADMIN_ID = 1700341163
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
+# Avtomatik tarjimalarda faqat shu tillarni ko'rsatish - UZBEK MUAMMOSI TUZATILDI
+ALLOWED_AUTO_LANGUAGES = ['en', 'uz', 'uz-Cyrl', 'uz-Latn', 'ru', 'zh']
+
+# Conversation states
 WAITING_FOR_YOUTUBE = 1
 WAITING_FOR_SRT = 2
 
+# Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # TUZATILDI: name -> __name__
 
 # ==================== MA'LUMOTLAR BAZASI ====================
+
 def init_db():
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS permissions
-                 (user_id INTEGER PRIMARY KEY,
-                  username TEXT,
-                  first_name TEXT,
-                  last_name TEXT,
-                  expires_at TEXT,
-                  granted_by INTEGER,
-                  granted_at TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS user_data
-                 (user_id INTEGER PRIMARY KEY,
-                  current_file TEXT,
-                  video_title TEXT,
-                  original_lang TEXT)''')
-    conn.commit()
-    conn.close()
+    """SQLite bazasini yaratish"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        # Ruxsatlar jadvali
+        c.execute('''CREATE TABLE IF NOT EXISTS permissions
+                     (user_id INTEGER PRIMARY KEY,
+                      username TEXT,
+                      first_name TEXT,
+                      last_name TEXT,
+                      expires_at TEXT,
+                      granted_by INTEGER,
+                      granted_at TEXT)''')
+        
+        # Foydalanuvchi ma'lumotlari jadvali
+        c.execute('''CREATE TABLE IF NOT EXISTS user_data
+                     (user_id INTEGER PRIMARY KEY,
+                      current_file TEXT,
+                      video_title TEXT,
+                      original_lang TEXT)''')
+        
+        conn.commit()
+        conn.close()
+        logger.info("✅ Baza muvaffaqiyatli yaratildi")
+    except Exception as e:
+        logger.error(f"❌ Baza xatolik: {e}")
 
-def add_permission(user_id, username, first_name, last_name, days):
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    expires_at = datetime.datetime.now() + datetime.timedelta(days=days)
-    c.execute('''INSERT OR REPLACE INTO permissions 
-                 (user_id, username, first_name, last_name, expires_at, granted_by, granted_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)''',
-              (user_id, username, first_name, last_name, expires_at.isoformat(), ADMIN_ID, datetime.datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
+def add_permission(user_id: int, username: str, first_name: str, last_name: str, days: int) -> bool:
+    """Foydalanuvchiga ruxsat berish"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        expires_at = datetime.datetime.now() + datetime.timedelta(days=days)
+        
+        c.execute('''INSERT OR REPLACE INTO permissions
+                     (user_id, username, first_name, last_name, expires_at, granted_by, granted_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                  (user_id, username, first_name, last_name, expires_at.isoformat(), ADMIN_ID, datetime.datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ruxsat berish xatolik: {e}")
+        return False
 
-def check_permission(user_id):
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    c.execute('SELECT expires_at FROM permissions WHERE user_id=?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    if result:
-        expires_at = datetime.datetime.fromisoformat(result[0])
-        return expires_at > datetime.datetime.now()
-    return False
+def remove_permission(user_id: int) -> bool:
+    """Ruxsatni olib tashlash"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        c.execute('DELETE FROM permissions WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ruxsat o'chirish xatolik: {e}")
+        return False
 
-def save_user_file(user_id, file_path, video_title, original_lang=None):
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    c.execute('''INSERT OR REPLACE INTO user_data 
-                 (user_id, current_file, video_title, original_lang)
-                 VALUES (?, ?, ?, ?)''',
-              (user_id, file_path, video_title, original_lang))
-    conn.commit()
-    conn.close()
+def check_permission(user_id: int) -> Tuple[bool, Optional[datetime.datetime]]:
+    """Ruxsatni tekshirish"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('SELECT expires_at FROM permissions WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if result:
+            expires_at = datetime.datetime.fromisoformat(result[0])
+            if expires_at > datetime.datetime.now():
+                return True, expires_at
+        
+        return False, None
+    except Exception as e:
+        logger.error(f"Ruxsat tekshirish xatolik: {e}")
+        return False, None
 
-def get_user_file(user_id):
-    conn = sqlite3.connect('bot_data.db')
-    c = conn.cursor()
-    c.execute('SELECT current_file, video_title, original_lang FROM user_data WHERE user_id=?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    if result and os.path.exists(result[0]):
-        return result
-    return None, None, None
+def get_all_users() -> list:
+    """Barcha ruxsat berilgan foydalanuvchilarni olish"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT user_id, username, first_name, last_name, expires_at
+                     FROM permissions
+                     ORDER BY expires_at''')
+        users = c.fetchall()
+        
+        conn.close()
+        return users
+    except Exception as e:
+        logger.error(f"Foydalanuvchilar ro'yxatini olish xatolik: {e}")
+        return []
+
+def save_user_file(user_id: int, file_path: str, video_title: str, original_lang: str = None) -> bool:
+    """Foydalanuvchi faylini saqlash"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('''INSERT OR REPLACE INTO user_data
+                     (user_id, current_file, video_title, original_lang)
+                     VALUES (?, ?, ?, ?)''',
+                  (user_id, file_path, video_title, original_lang))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Fayl saqlash xatolik: {e}")
+        return False
+
+def get_user_file(user_id: int) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Foydalanuvchi faylini olish"""
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        
+        c.execute('SELECT current_file, video_title, original_lang FROM user_data WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if result:
+            file_path = result[0]
+            if file_path and os.path.exists(file_path):
+                return result
+            else:
+                # Fayl yo'q bo'lsa, bazadan o'chirish
+                conn = sqlite3.connect('bot_data.db')
+                c = conn.cursor()
+                c.execute('DELETE FROM user_data WHERE user_id = ?', (user_id,))
+                conn.commit()
+                conn.close()
+                return None, None, None
+        else:
+            return None, None, None
+    except Exception as e:
+        logger.error(f"Fayl olish xatolik: {e}")
+        return None, None, None
 
 # ==================== TIL NOMLARI ====================
-def get_language_name(lang_code):
-    languages = {'en':'Ingliz tili','uz':'O\'zbek tili'}
+
+def get_language_name(lang_code: str) -> str:
+    """Til kodini nomga o'girish"""
+    languages = {
+        'en': 'Ingliz tili', 'ru': 'Rus tili', 'uz': 'O\'zbek tili', 
+        'uz-Cyrl': 'O\'zbek (Kirill)', 'uz-Latn': 'O\'zbek (Lotin)',
+        'tr': 'Turk tili',
+        'ar': 'Arab tili', 'fa': 'Fors tili', 'ur': 'Urdu tili', 'hi': 'Hind tili',
+        'es': 'Ispan tili', 'fr': 'Fransuz tili', 'de': 'Nemis tili', 'it': 'Italyan tili',
+        'ja': 'Yapon tili', 'ko': 'Koreys tili', 'zh': 'Xitoy tili', 'pt': 'Portugal tili',
+        'id': 'Indonez tili', 'ms': 'Malay tili', 'th': 'Tay tili', 'vi': 'Vyetnam tili',
+        'bn': 'Bengal tili', 'pl': 'Polyak tili', 'uk': 'Ukrain tili', 'ro': 'Rumin tili',
+        'nl': 'Golland tili', 'el': 'Grek tili', 'hu': 'Venger tili', 'sv': 'Shved tili',
+        'cs': 'Chex tili', 'fi': 'Fin tili', 'da': 'Daniya tili', 'he': 'Ibroniycha',
+        'no': 'Norveg tili', 'sk': 'Slovak tili', 'hr': 'Xorvat tili', 'sr': 'Serb tili',
+        'bg': 'Bolg\'ar tili', 'lt': 'Litva tili', 'lv': 'Latish tili', 'et': 'Eston tili',
+    }
     return languages.get(lang_code, lang_code.upper())
 
 # ==================== DEEPSEEK TARJIMA ====================
-async def translate_with_deepseek(text):
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    system_prompt = "You are a professional translator. Translate the given text to Uzbek language. Return ONLY the translated text."
+
+async def translate_with_deepseek(text: str, target_lang: str = "uzbek") -> Optional[str]:
+    """DeepSeek orqali matn tarjima qilish - OPTIMALLASHTIRILDI"""
+    
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # 8000 token - katta subtitrlar uchun
     payload = {
         "model": "deepseek-chat",
-        "messages": [{"role":"system","content":system_prompt},{"role":"user","content":text}],
-        "temperature":0.3,"max_tokens":2000
+        "messages": [
+            {
+                "role": "system",
+                "content": f"Sen professional tarjimonsan. Matnni {target_lang} tiliga tarjima qil. "
+                           f"Har bir qatorni '###' bilan ajratilgan holda qaytar. Faqat tarjima qilingan matnni qaytar."
+            },
+            {
+                "role": "user",
+                "content": text
+            }
+        ],
+        "temperature": 0.3,
+        "max_tokens": 8000  # O'ZGARTIRILDI: 2000 -> 8000
     }
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(DEEPSEEK_API_URL, headers=headers, json=payload) as resp:
+            async with session.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=120) as resp:
                 if resp.status == 200:
                     result = await resp.json()
-                    translated = result['choices'][0]['message']['content'].strip()
-                    return re.sub(r'^Translate this to Uzbek:?\s*', '', translated, flags=re.IGNORECASE)
+                    return result['choices'][0]['message']['content'].strip()
                 else:
-                    return f"[?] {text}"
-    except:
-        return f"[?] {text}"
+                    error_text = await resp.text()
+                    logger.error(f"Tarjima xatolik: {resp.status} - {error_text}")
+                    
+                    # Qayta urinish - 1 marta
+                    if resp.status == 429:  # Rate limit
+                        await asyncio.sleep(5)
+                        async with session.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=120) as resp2:
+                            if resp2.status == 200:
+                                result2 = await resp2.json()
+                                return result2['choices'][0]['message']['content'].strip()
+                    return None
+    except asyncio.TimeoutError:
+        logger.error("Tarjima timeout")
+        return None
+    except Exception as e:
+        logger.error(f"Tarjima exception: {e}")
+        return None
 
-async def translate_srt_file(update, context, srt_file, video_title):
+# ==================== OPTIMALLASHTIRILGAN TARJIMA ====================
+
+async def translate_with_progress(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                  srt_file: str, video_title: str) -> Tuple[Optional[str], Optional[Any]]:
+    """Progress bar bilan tarjima qilish - OPTIMALLASHTIRILDI: Bitta API so'rov"""
+    
     user_id = update.effective_user.id
-    subs = pysrt.open(srt_file)
-    total = len(subs)
-    translated_subs = []
-    for i, sub in enumerate(subs):
-        translated_text = await translate_with_deepseek(sub.text)
-        sub.text = translated_text
-        translated_subs.append(sub)
-    output_path = srt_file.replace('.srt','_ozbek.srt')
-    new_subs = pysrt.SubRipFile()
-    for sub in translated_subs: new_subs.append(sub)
-    new_subs.save(output_path, encoding='utf-8')
-    return output_path
+    
+    # Progress xabar yuborish
+    keyboard = [[InlineKeyboardButton("❌ To'xtatish", callback_data="cancel_translate")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    progress_msg = await context.bot.send_message(
+        chat_id=user_id,
+        text="🧠 *Tarjima boshlandi*\n\n"
+             "Subtitr yuklanmoqda...",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+    
+    context.user_data['cancelled'] = False
+    
+    try:
+        # Subtitrni yuklash
+        subs = pysrt.open(srt_file)
+        total = len(subs)
+        
+        if context.user_data.get('cancelled', False):
+            await progress_msg.edit_text("⏹️ *Tarjima to'xtatildi*", parse_mode='Markdown')
+            return None, progress_msg
+        
+        await progress_msg.edit_text(
+            f"🧠 *Tarjima qilinmoqda...*\n\n"
+            f"📊 {total} ta qator birlashtirilmoqda...",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        # 🔥 HAMMA TEXTNI BIRLASHTIRISH - ASOSIY OPTIMIZATSIYA
+        # Har bir qatorni maxsus separator bilan ajratamiz
+        separator = "\n###\n"
+        full_text = separator.join([sub.text for sub in subs])
+        
+        # Yuklanayotgan ma'lumot
+        text_size = len(full_text)
+        await progress_msg.edit_text(
+            f"🧠 *DeepSeek tarjima qilmoqda...*\n\n"
+            f"📊 {total} ta qator, {text_size} ta belgi\n"
+            f"⏳ Bu 30-60 soniya davom etishi mumkin",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        # API ga yuborish
+        start_time = time.time()
+        translated_full = await translate_with_deepseek(full_text, "uzbek")
+        
+        if context.user_data.get('cancelled', False):
+            await progress_msg.edit_text("⏹️ *Tarjima to'xtatildi*", parse_mode='Markdown')
+            return None, progress_msg
+        
+        if not translated_full:
+            await progress_msg.edit_text("❌ Tarjima xatolik yuz berdi", parse_mode='Markdown')
+            return None, progress_msg
+        
+        # 🔥 QAYTA AJRATISH
+        # API dan kelgan matnni qayta qatorlarga ajratamiz
+        translated_parts = translated_full.split("###")
+        
+        # Tozalash
+        translated_parts = [p.strip() for p in translated_parts if p.strip()]
+        
+        # Agar qatorlar soni mos kelmasa
+        if len(translated_parts) != total:
+            logger.warning(f"Qatorlar soni mos kelmadi: original={total}, tarjima={len(translated_parts)}")
+            
+            # Moslashtirishga urinish
+            if len(translated_parts) > total:
+                translated_parts = translated_parts[:total]
+            elif len(translated_parts) < total:
+                # Yetmagan qatorlarni to'ldirish
+                translated_parts.extend([""] * (total - len(translated_parts)))
+        
+        # Qatorlarni yangilash
+        for i, sub in enumerate(subs):
+            if i < len(translated_parts) and translated_parts[i]:
+                sub.text = translated_parts[i]
+        
+        # Faylni saqlash
+        output_path = srt_file.replace('.srt', f'_uz.srt')
+        subs.save(output_path, encoding='utf-8')
+        
+        total_time = int(time.time() - start_time)
+        await progress_msg.edit_text(
+            f"✅ *Tarjima tugadi!*\n"
+            f"⏱️ {total_time} sekund\n"
+            f"📊 {total} ta qator\n"
+            f"🚀 Optimallashtirilgan usul: 1 ta API so'rov",
+            parse_mode='Markdown'
+        )
+        
+        return output_path, progress_msg
+        
+    except Exception as e:
+        logger.error(f"Tarjima xatolik: {e}")
+        await progress_msg.edit_text(f"❌ Xatolik: {str(e)[:50]}", parse_mode='Markdown')
+        return None, progress_msg
 
-# ==================== SRT KONVERT ====================
-def convert_to_srt(file_path, ext):
-    if ext=='srt': return file_path
-    with open(file_path,'r',encoding='utf-8',errors='ignore') as f: content=f.read()
-    if ext=='vtt':
-        lines=[l for l in content.split('\n') if '-->' in l or l.strip() and not l.startswith('WEBVTT')]
-        content='\n'.join(lines)
-    out_file=file_path.replace(f'.{ext}','.srt')
-    with open(out_file,'w',encoding='utf-8') as f: f.write(content)
-    return out_file
+# ==================== SUBTITR FORMATLARINI O'GIRISH ====================
 
-# ==================== YOUTUBE SUBTITR ====================
-async def get_youtube_subtitles(url):
-    ydl_opts={'skip_download':True,'writesubtitles':True,'writeautomaticsub':True,'subtitleslangs':['uz','en'],'quiet':True}
+def vtt_to_srt(vtt_content: str) -> str:
+    """VTT formatini SRT ga o'girish"""
+    lines = vtt_content.split('\n')
+    srt_lines = []
+    counter = 1
+    in_cue = False
+    
+    for line in lines:
+        line = line.strip()
+        
+        if line.startswith('WEBVTT') or line.startswith('NOTE') or line.startswith('STYLE'):
+            continue
+        
+        if '-->' in line:
+            line = line.replace('.', ',')
+            line = re.sub(r'<[^>]+>', '', line)
+            srt_lines.append(str(counter))
+            counter += 1
+            srt_lines.append(line)
+            in_cue = True
+        elif line == '':
+            if in_cue:
+                srt_lines.append('')
+                in_cue = False
+        else:
+            if in_cue:
+                line = re.sub(r'<[^>]+>', '', line)
+                srt_lines.append(line)
+    
+    return '\n'.join(srt_lines)
+
+def ass_to_srt(ass_content: str) -> str:
+    """ASS/SSA formatini SRT ga o'girish"""
+    srt_lines = []
+    counter = 1
+    
+    dialogue_pattern = r'Dialogue:\s*\d+,(\d+:\d+:\d+\.\d+),(\d+:\d+:\d+\.\d+),[^,]*,[^,]*,\d+,\d+,\d+,(.*)'
+    
+    for line in ass_content.split('\n'):
+        if line.startswith('Dialogue:'):
+            match = re.match(dialogue_pattern, line)
+            if match:
+                start = match.group(1).replace('.', ',')
+                end = match.group(2).replace('.', ',')
+                text = match.group(3)
+                
+                text = re.sub(r'\{[^}]*\}', '', text)
+                text = text.replace('\\N', '\n')
+                text = text.replace('\\n', '\n')
+                text = re.sub(r'<[^>]+>', '', text)
+                
+                srt_lines.append(str(counter))
+                counter += 1
+                srt_lines.append(f"{start} --> {end}")
+                srt_lines.append(text.strip())
+                srt_lines.append('')
+    
+    return '\n'.join(srt_lines)
+
+def sbv_to_srt(sbv_content: str) -> str:
+    """SBV (YouTube) formatini SRT ga o'girish"""
+    lines = sbv_content.split('\n')
+    srt_lines = []
+    counter = 1
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        if ',' in line and line.count(':') >= 2:
+            times = line.split(',')
+            if len(times) == 2:
+                start = times[0].replace('.', ',')
+                end = times[1].replace('.', ',')
+                
+                srt_lines.append(str(counter))
+                counter += 1
+                srt_lines.append(f"{start} --> {end}")
+                
+                i += 1
+                while i < len(lines) and lines[i].strip():
+                    text = lines[i].strip()
+                    text = re.sub(r'<[^>]+>', '', text)
+                    srt_lines.append(text)
+                    i += 1
+                
+                srt_lines.append('')
+        i += 1
+    
+    return '\n'.join(srt_lines)
+
+def convert_to_srt(input_file: str, input_format: str) -> Optional[str]:
+    """Turli formatdagi subtitrni SRT ga o'girish"""
+    
+    output_file = input_file.replace(f'.{input_format}', '.srt')
+    
+    try:
+        with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        if input_format == 'vtt':
+            srt_content = vtt_to_srt(content)
+        elif input_format in ['ass', 'ssa']:
+            srt_content = ass_to_srt(content)
+        elif input_format in ['sbv', 'sub']:
+            srt_content = sbv_to_srt(content)
+        elif input_format == 'srt':
+            return input_file
+        else:
+            try:
+                subs = pysrt.open(input_file)
+                subs.save(output_file, encoding='utf-8')
+                return output_file
+            except:
+                logger.error(f"Format o'girib bo'lmadi: {input_format}")
+                return None
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(srt_content)
+        
+        return output_file
+        
+    except Exception as e:
+        logger.error(f"Konvertatsiya xatolik: {e}")
+        return None
+
+# ==================== YOUTUBE SUBTITR OLISH ====================
+
+async def get_youtube_subtitles(url: str) -> Tuple[Optional[str], dict, Optional[dict]]:
+    """YouTube dan subtitr olish - UZBEK MUAMMOSI TUZATILDI"""
+    
+    ydl_opts = {
+        'skip_download': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['all'],
+        'subtitlesformat': 'srt/vtt/ass/ssa/sbv',
+        'quiet': True,
+    }
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info(f"YouTube ma'lumot olinmoqda: {url}")
             info = ydl.extract_info(url, download=False)
-            video_title = info.get('title','Video')
-            subs_manual = info.get('subtitles',{})
-            subs_auto = info.get('automatic_captions',{})
-            manual_subs={}
-            auto_subs={}
-            for lang,data in subs_manual.items():
-                if lang in ['uz','en']: manual_subs[lang]={'name':get_language_name(lang),'type':'manual','data':data}
-            for lang,data in subs_auto.items():
-                if lang in ['uz','en']: auto_subs[lang]={'name':get_language_name(lang)+' (avto)','type':'auto','data':data}
-            return video_title, manual_subs, auto_subs
-    except:
-        return None, {}, {}
+            video_title = info.get('title', 'Noma\'lum video')
+            
+            subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+            
+            available_langs = {}
+            
+            # HAMMA QO'LDA YUKLANGANLAR
+            for lang, sub_data in subtitles.items():
+                if sub_data:
+                    formats = []
+                    for sub in sub_data:
+                        ext = sub.get('ext', 'unknown')
+                        if ext not in formats:
+                            formats.append(ext)
+                    
+                    lang_name = get_language_name(lang)
+                    available_langs[lang] = {
+                        'name': lang_name,
+                        'type': 'manual',
+                        'formats': formats
+                    }
+            
+            # AVTOMATIK - KENGAYTIRILGAN TILLAR (UZBEK UCHUN)
+            for lang, sub_data in automatic_captions.items():
+                if sub_data and lang not in available_langs:
+                    # Uzbek tillarini tekshirish (uz, uz-Cyrl, uz-Latn)
+                    is_allowed = False
+                    for allowed in ALLOWED_AUTO_LANGUAGES:
+                        if lang.startswith(allowed.split('-')[0]):  # 'uz' bilan boshlanganlarning hammasini olish
+                            is_allowed = True
+                            break
+                    
+                    if is_allowed or lang in ALLOWED_AUTO_LANGUAGES:
+                        formats = []
+                        for sub in sub_data:
+                            ext = sub.get('ext', 'unknown')
+                            if ext not in formats:
+                                formats.append(ext)
+                        
+                        lang_name = get_language_name(lang)
+                        available_langs[lang] = {
+                            'name': lang_name + ' (auto)',
+                            'type': 'auto',
+                            'formats': formats
+                        }
+            
+            return video_title, available_langs, info
+            
+    except Exception as e:
+        logger.error(f"YouTube xatolik: {e}")
+        return None, {}, None
 
-async def download_subtitle(url, lang_code, lang_info):
-    with tempfile.NamedTemporaryFile(suffix='.srt', delete=False) as tmp: fname=tmp.name
-    ydl_opts={'skip_download':True,'writesubtitles':True,'subtitleslangs':[lang_code],'outtmpl':fname.replace('.srt',''),'quiet':True}
-    if lang_info['type']=='auto': ydl_opts['writeautomaticsub']=True
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
-    for ext in ['srt','vtt','ass','ssa','sbv']:
-        fpath=f"{fname}.{lang_code}.{ext}"; 
-        if os.path.exists(fpath): return convert_to_srt(fpath, ext)
-    return None
+async def download_subtitle(url: str, lang_code: str, lang_info: dict) -> Optional[str]:
+    """Subtitrni yuklab olish"""
+    
+    with tempfile.NamedTemporaryFile(suffix='.srt', delete=False) as tmp_file:
+        temp_filename = tmp_file.name
+    
+    try:
+        ydl_opts = {
+            'skip_download': True,
+            'writesubtitles': True,
+            'subtitleslangs': [lang_code],
+            'subtitlesformat': 'srt/vtt/ass/ssa/sbv',
+            'outtmpl': temp_filename.replace('.srt', ''),
+            'quiet': True,
+        }
+        
+        if lang_info['type'] == 'auto':
+            ydl_opts['writeautomaticsub'] = True
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        base_name = temp_filename.replace('.srt', '')
+        
+        # Faylni qidirish
+        for ext in ['srt', 'vtt', 'ass', 'ssa', 'sbv']:
+            file_path = f"{base_name}.{lang_code}.{ext}"
+            if os.path.exists(file_path):
+                if ext != 'srt':
+                    return convert_to_srt(file_path, ext)
+                return file_path
+            
+            file_path2 = f"{base_name}.{ext}"
+            if os.path.exists(file_path2):
+                if ext != 'srt':
+                    return convert_to_srt(file_path2, ext)
+                return file_path2
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Subtitr yuklash xatolik: {e}")
+        return None
 
-# ==================== START ====================
-async def start(update, context):
-    user_id=update.effective_user.id
-    keyboard=[[InlineKeyboardButton("🎬 YouTube SRT",callback_data="main_youtube")],[InlineKeyboardButton("📄 SRT Tarjima",callback_data="main_srt")]]
-    if user_id==ADMIN_ID: keyboard.append([InlineKeyboardButton("👑 Admin panel",callback_data="admin_menu")])
-    await update.message.reply_text("👋 Xush kelibsiz! Tanlang:",reply_markup=InlineKeyboardMarkup(keyboard))
+# ==================== START KOMANDASI ====================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """START KOMANDASI"""
+    try:
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "noma'lum"
+        
+        logger.info(f"🔥 START: {user_id}")
+        
+        # Adminmi tekshirish
+        if user_id == ADMIN_ID:
+            keyboard = [
+                [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_menu")],
+                [InlineKeyboardButton("📋 Ruxsatlarni boshqarish", callback_data="admin_manage")],
+                [InlineKeyboardButton("🎬 Botdan foydalanish", callback_data="user_menu")]
+            ]
+            await update.message.reply_text(
+                "👑 *Admin panel*",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Ruxsatni tekshirish
+        has_perm, expires = check_permission(user_id)
+        
+        if has_perm:
+            keyboard = [
+                [InlineKeyboardButton("🎬 YouTube video", callback_data="main_youtube")],
+                [InlineKeyboardButton("📄 SRT fayl", callback_data="main_srt")]
+            ]
+            days_left = (expires - datetime.datetime.now()).days
+            await update.message.reply_text(
+                f"✅ Xush kelibsiz! ({days_left} kun qoldi)\n\nTanlang:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Ruxsat yo'q\n\n"
+                f"Botdan foydalanish uchun @maestro_o ga murojaat qiling. "
+                f"Rozi bo'lsa, quyidagi ID raqamingizni yuboring.\n\n"
+                f"🆔 ID: {user_id}"
+            )
+            
+    except Exception as e:
+        logger.error(f"Start xatolik: {e}")
+        await update.message.reply_text("⚠️ Xatolik. Admin @maestro_o ga murojaat qiling.")
+
+# ==================== TARJIMANI TO'XTATISH ====================
+
+async def cancel_translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['cancelled'] = True
+    await query.edit_message_text("⏹️ To'xtatildi")
+
+# ==================== ADMIN MENYU ====================
+
+async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if update.effective_user.id != ADMIN_ID:
+        await query.edit_message_text("❌ Admin uchun")
+        return
+    
+    await query.edit_message_text("👤 Foydalanuvchi ID raqamini yuboring:")
+    context.user_data['admin_action'] = 'waiting_for_add_id'
+
+async def admin_manage_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if update.effective_user.id != ADMIN_ID:
+        await query.edit_message_text("❌ Admin uchun")
+        return
+    
+    users = get_all_users()
+    
+    if not users:
+        await query.edit_message_text(
+            "📋 Hech kimga ruxsat berilmagan",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")]])
+        )
+        return
+    
+    text = "📋 Foydalanuvchilar:\n\n"
+    keyboard = []
+    
+    for uid, uname, fname, lname, expires in users:
+        try:
+            days_left = (datetime.datetime.fromisoformat(expires) - datetime.datetime.now()).days
+        except:
+            days_left = 0
+        name = f"{fname} {lname}".strip() or "Ismsiz"
+        text += f"🆔 {uid} | {name} | {days_left} kun\n"
+        
+        keyboard.append([InlineKeyboardButton(f"👤 {name}", url=f"tg://user?id={uid}")])
+        keyboard.append([InlineKeyboardButton(f"❌ Bekor qilish", callback_data=f"remove_{uid}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def remove_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    target_id = int(query.data.replace("remove_", ""))
+    
+    if remove_permission(target_id):
+        try:
+            await context.bot.send_message(target_id, "❌ Ruxsatingiz bekor qilindi")
+        except:
+            pass
+        
+        await query.edit_message_text("✅ Bekor qilindi")
+        await admin_manage_callback(update, context)
+
+# ==================== ADMIN XABARLAR ====================
+
+async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if update.effective_user.id != ADMIN_ID:
+        return False
+    
+    if context.user_data.get('admin_action') == 'waiting_for_add_id':
+        try:
+            target_id = int(update.message.text)
+            
+            try:
+                chat = await context.bot.get_chat(target_id)
+                username = chat.username or "noma'lum"
+                first_name = chat.first_name or ""
+                last_name = chat.last_name or ""
+            except:
+                username = "noma'lum"
+                first_name = "Noma'lum"
+                last_name = ""
+            
+            context.user_data['target_id'] = target_id
+            context.user_data['target_username'] = username
+            context.user_data['target_first_name'] = first_name
+            context.user_data['target_last_name'] = last_name
+            context.user_data['admin_action'] = 'waiting_for_days'
+            
+            keyboard = [
+                [InlineKeyboardButton("3 kun", callback_data="days_3"),
+                 InlineKeyboardButton("7 kun", callback_data="days_7")],
+                [InlineKeyboardButton("10 kun", callback_data="days_10"),
+                 InlineKeyboardButton("20 kun", callback_data="days_20")],
+                [InlineKeyboardButton("30 kun", callback_data="days_30")],
+                [InlineKeyboardButton("🔙 Bekor qilish", callback_data="back_to_admin")]
+            ]
+            
+            name = f"{first_name} {last_name}".strip()
+            await update.message.reply_text(
+                f"ID: {target_id}\nIsm: {name}\nUsername: @{username}\n\nKun tanlang:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except:
+            await update.message.reply_text("❌ Noto'g'ri ID")
+        
+        return True
+    
+    return False
+
+# ==================== KUN TANLASH ====================
+
+async def days_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    data = query.data
+    target_id = context.user_data.get('target_id')
+    target_username = context.user_data.get('target_username', 'user')
+    target_first_name = context.user_data.get('target_first_name', '')
+    target_last_name = context.user_data.get('target_last_name', '')
+    
+    if not target_id:
+        await query.edit_message_text("❌ Xatolik")
+        return
+    
+    days_map = {'days_3': 3, 'days_7': 7, 'days_10': 10, 'days_20': 20, 'days_30': 30}
+    
+    if data in days_map:
+        days = days_map[data]
+        
+        if add_permission(target_id, target_username, target_first_name, target_last_name, days):
+            try:
+                await context.bot.send_message(
+                    target_id,
+                    f"✅ Ruxsat berildi! {days} kun"
+                )
+                msg = "✅ Ruxsat berildi"
+            except:
+                msg = "✅ Ruxsat berildi (xabar bormadi)"
+        else:
+            msg = "❌ Xatolik"
+        
+        await query.edit_message_text(msg)
+        context.user_data['admin_action'] = None
+        context.user_data['target_id'] = None
+
+# ==================== USER MENYU ====================
+
+async def user_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("🎬 YouTube", callback_data="main_youtube")],
+        [InlineKeyboardButton("📄 SRT fayl", callback_data="main_srt")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_admin")]
+    ]
+    await query.edit_message_text("Tanlang:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ==================== BACK TO ADMIN ====================
+
+async def back_to_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("👤 Ruxsat berish", callback_data="admin_menu")],
+        [InlineKeyboardButton("📋 Ruxsatlarni boshqarish", callback_data="admin_manage")],
+        [InlineKeyboardButton("🎬 Botdan foydalanish", callback_data="user_menu")]
+    ]
+    await query.edit_message_text("👑 Admin panel", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ==================== ASOSIY MENYU ====================
+
+async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    has_perm, _ = check_permission(user_id)
+    if not has_perm and user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Ruxsat yo'q")
+        return
+    
+    if query.data == "main_youtube":
+        keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]]
+        await query.edit_message_text(
+            "🎬 YouTube havolasini yuboring:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        context.user_data['state'] = WAITING_FOR_YOUTUBE
+        
+    elif query.data == "main_srt":
+        keyboard = [[InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")]]
+        await query.edit_message_text(
+            "📄 SRT faylni yuboring:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        context.user_data['state'] = WAITING_FOR_SRT
+
+# ==================== ORQAGA QAYTISH ====================
+
+async def back_to_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    context.user_data['state'] = None
+    
+    if user_id == ADMIN_ID:
+        keyboard = [
+            [InlineKeyboardButton("🎬 YouTube", callback_data="main_youtube")],
+            [InlineKeyboardButton("📄 SRT fayl", callback_data="main_srt")],
+            [InlineKeyboardButton("🔙 Admin", callback_data="back_to_admin")]
+        ]
+        text = "Tanlang:"
+    else:
+        keyboard = [
+            [InlineKeyboardButton("🎬 YouTube", callback_data="main_youtube")],
+            [InlineKeyboardButton("📄 SRT fayl", callback_data="main_srt")]
+        ]
+        has_perm, expires = check_permission(user_id)
+        days_left = (expires - datetime.datetime.now()).days if has_perm else 0
+        text = f"✅ Xush kelibsiz! ({days_left} kun qoldi)"
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# ==================== YOUTUBE HAVOLA ====================
+
+async def handle_youtube_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if context.user_data.get('state') != WAITING_FOR_YOUTUBE:
+        return False
+    
+    user_id = update.effective_user.id
+    url = update.message.text
+    
+    has_perm, _ = check_permission(user_id)
+    if not has_perm and user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Ruxsat yo'q")
+        return True
+    
+    msg = await update.message.reply_text("⏳ Tekshirilmoqda...")
+    
+    video_title, available_langs, _ = await get_youtube_subtitles(url)
+    
+    if not available_langs:
+        await msg.edit_text("❌ Subtitr topilmadi")
+        context.user_data['state'] = None
+        return True
+    
+    keyboard = []
+    for lang_code, lang_info in available_langs.items():
+        button_text = f"{lang_info['name']}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"sub_{lang_code}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main")])
+    
+    await msg.edit_text(
+        f"📹 *{video_title[:50]}*\n\n"
+        f"{len(available_langs)} ta subtitr topildi:\n\n"
+        f"Tanlang:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    context.user_data['video_url'] = url
+    context.user_data['video_title'] = video_title
+    context.user_data['langs'] = available_langs
+    context.user_data['state'] = None
+    
+    return True
+
+# ==================== SUBTITR YUKLASH ====================
+
+async def subtitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    has_perm, _ = check_permission(user_id)
+    if not has_perm and user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Ruxsat yo'q")
+        return
+    
+    if not query.data.startswith("sub_"):
+        return
+    
+    lang_code = query.data.replace("sub_", "")
+    
+    url = context.user_data.get('video_url')
+    video_title = context.user_data.get('video_title')
+    langs = context.user_data.get('langs', {})
+    
+    if not url or lang_code not in langs:
+        await query.edit_message_text("❌ Xatolik")
+        return
+    
+    lang_info = langs[lang_code]
+    
+    await query.edit_message_text(f"⏳ Yuklanmoqda...")
+    
+    srt_file = await download_subtitle(url, lang_code, lang_info)
+    
+    if srt_file and os.path.exists(srt_file):
+        save_user_file(user_id, srt_file, video_title, lang_info['name'])
+        
+        with open(srt_file, 'rb') as f:
+            await context.bot.send_document(
+                user_id,
+                f,
+                filename=f"{video_title[:30]}.srt",
+                caption=f"✅ {lang_info['name']}"
+            )
+        
+        keyboard = [
+            [InlineKeyboardButton("🧠 Tarjima", callback_data="translate_srt")],
+            [InlineKeyboardButton("🔙 Menyu", callback_data="back_to_main")]
+        ]
+        await context.bot.send_message(
+            user_id,
+            "✅ Tayyor! Tarjima qilish uchun tugmani bosing:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        await query.delete_message()
+    else:
+        await query.edit_message_text("❌ Xatolik")
+
+# ==================== SRT FAYL ====================
+
+async def handle_srt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('state') != WAITING_FOR_SRT:
+        return
+    
+    user_id = update.effective_user.id
+    
+    has_perm, _ = check_permission(user_id)
+    if not has_perm and user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Ruxsat yo'q")
+        return
+    
+    document = update.message.document
+    
+    if not document.file_name.endswith('.srt'):
+        await update.message.reply_text("❌ Faqat .srt fayl qabul qilinadi")
+        return
+    
+    file = await context.bot.get_file(document.file_id)
+    
+    with tempfile.NamedTemporaryFile(suffix='.srt', delete=False) as tmp:
+        temp_filename = tmp.name
+    
+    await file.download_to_drive(temp_filename)
+    
+    save_user_file(user_id, temp_filename, document.file_name, "Yuklangan")
+    
+    keyboard = [
+        [InlineKeyboardButton("🧠 Tarjima", callback_data="translate_srt")],
+        [InlineKeyboardButton("🔙 Menyu", callback_data="back_to_main")]
+    ]
+    
+    await update.message.reply_text(
+        f"✅ {document.file_name} qabul qilindi!",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    context.user_data['state'] = None
+
+# ==================== TARJIMA ====================
+
+async def translate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    has_perm, _ = check_permission(user_id)
+    if not has_perm and user_id != ADMIN_ID:
+        await query.edit_message_text("❌ Ruxsat yo'q")
+        return
+    
+    if query.data != "translate_srt":
+        return
+    
+    srt_file, video_title, _ = get_user_file(user_id)
+    
+    if not srt_file or not os.path.exists(srt_file):
+        await query.edit_message_text("❌ Fayl topilmadi")
+        return
+    
+    # Eski progress xabarni o'chirish
+    await query.delete_message()
+    
+    translated_file, progress_msg = await translate_with_progress(
+        update, context, srt_file, video_title or "subtitr"
+    )
+    
+    if translated_file and os.path.exists(translated_file):
+        with open(translated_file, 'rb') as f:
+            await context.bot.send_document(
+                user_id,
+                f,
+                filename=f"uzbek_{os.path.basename(srt_file)}",
+                caption="✅ Tarjima tayyor!"
+            )
+        
+        try:
+            await progress_msg.delete()
+        except:
+            pass
+        
+        if user_id == ADMIN_ID:
+            keyboard = [
+                [InlineKeyboardButton("🎬 YouTube", callback_data="main_youtube")],
+                [InlineKeyboardButton("📄 SRT", callback_data="main_srt")],
+                [InlineKeyboardButton("🔙 Admin", callback_data="back_to_admin")]
+            ]
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🎬 YouTube", callback_data="main_youtube")],
+                [InlineKeyboardButton("📄 SRT", callback_data="main_srt")]
+            ]
+        
+        await context.bot.send_message(
+            user_id,
+            "✨ Yana?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        # Fayllarni tozalash
+        try:
+            os.remove(translated_file)
+            os.remove(srt_file)
+        except:
+            pass
+    else:
+        if not context.user_data.get('cancelled'):
+            await query.edit_message_text("❌ Xatolik yuz berdi")
+
+# ==================== XABAR HANDLER ====================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Admin xabarlarini tekshirish
+    if await handle_admin_message(update, context):
+        return
+    
+    # YouTube URL ni tekshirish
+    if await handle_youtube_url(update, context):
+        return
+    
+    # Oddiy xabar
+    if context.user_data.get('state') is None:
+        await update.message.reply_text("❌ Iltimos, /start ni bosing")
 
 # ==================== MAIN ====================
-async def handle_message(update,context):
-    await update.message.reply_text("❌ Iltimos /start ni bosing.")
 
 def main():
-    init_db()
-    app=Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ Bot ishga tushdi!")
-    app.run_polling(drop_pending_updates=True)
+    try:
+        print("⏳ Ishga tushmoqda...")
+        
+        # Bazani yaratish
+        init_db()
+        
+        # Bot
+        app = Application.builder().token(BOT_TOKEN).build()
+        
+        # Handlerlar
+        app.add_handler(CommandHandler("start", start))
+        
+        # Callbacklar
+        app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern="^admin_menu$"))
+        app.add_handler(CallbackQueryHandler(admin_manage_callback, pattern="^admin_manage$"))
+        app.add_handler(CallbackQueryHandler(remove_user_callback, pattern="^remove_"))
+        app.add_handler(CallbackQueryHandler(user_menu_callback, pattern="^user_menu$"))
+        app.add_handler(CallbackQueryHandler(back_to_admin_callback, pattern="^back_to_admin$"))
+        app.add_handler(CallbackQueryHandler(back_to_main_callback, pattern="^back_to_main$"))
+        app.add_handler(CallbackQueryHandler(days_callback, pattern="^days_"))
+        app.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_"))
+        app.add_handler(CallbackQueryHandler(subtitle_callback, pattern="^sub_"))
+        app.add_handler(CallbackQueryHandler(translate_callback, pattern="^translate_"))
+        app.add_handler(CallbackQueryHandler(cancel_translate_callback, pattern="^cancel_translate$"))
+        
+        # Xabarlar
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_srt_file))
+        
+        print("✅ Bot ishga tushdi!")
+        print(f"👑 Admin: {ADMIN_ID}")
+        print(f"🚀 Optimallashtirilgan rejim: 1 ta API so'rov = butun subtitr")
+        
+        app.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        logger.error(f"Xatolik: {e}")
+        print(f"❌ Xatolik: {e}")
+        time.sleep(5)
+        main()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
