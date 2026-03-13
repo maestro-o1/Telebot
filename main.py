@@ -1,1789 +1,1747 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Do'kon boshqaruvi uchun Telegram bot
+Muallif: @maestro_o
+Versiya: 1.0
+"""
+
 import logging
 import os
-import json
-import sqlite3
+import sys
 from datetime import datetime
-import traceback
-import pytz
+import pandas as pd
+import json
+import aiofiles
+import asyncio
+from typing import Dict, List, Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, 
     CommandHandler, 
+    CallbackQueryHandler, 
     MessageHandler, 
-    filters, 
-    ContextTypes, 
-    CallbackQueryHandler,
+    filters,
+    ContextTypes,
     ConversationHandler
 )
-from telegram.constants import ParseMode
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# Bot configuration
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
-
-# Toshkent vaqti
-TASHKENT_TZ = pytz.timezone('Asia/Tashkent')
-
-def get_tashkent_time():
-    return datetime.now(TASHKENT_TZ)
-
-def format_tashkent_time(dt=None):
-    if dt is None:
-        dt = get_tashkent_time()
-    return dt.strftime('%d.%m.%Y %H:%M')
-
-# States
-(
-    WAITING_CATEGORY_NAME,
-    WAITING_PRODUCT_NAME,
-    WAITING_PRODUCT_PHOTO,
-    WAITING_PURCHASE_PRICE,
-    WAITING_SELLING_PRICE,
-    WAITING_QUANTITY,
-    WAITING_SEARCH,
-    WAITING_SUBCATEGORY_NAME,
-    WAITING_CONFIRM_DELETE,
-    WAITING_EDIT_NAME,
-    WAITING_EDIT_PURCHASE,
-    WAITING_EDIT_SELLING,
-    WAITING_EDIT_QUANTITY,
-    WAITING_USER_ID,
-    WAITING_IMPORT_FILE
-) = range(15)
-
-# Setup logging
+# Logging sozlamalari
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Database functions
-def get_db_connection():
-    return sqlite3.connect('shop_database.db')
+# ==================== KONFIGURATSIYA ====================
+from dotenv import load_dotenv
+load_dotenv()
 
-def init_database():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Users table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            full_name TEXT,
-            added_by INTEGER,
-            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Pending requests table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS pending_requests (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            full_name TEXT,
-            request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Categories table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            parent_id INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (parent_id) REFERENCES categories (id) ON DELETE CASCADE
-        )
-    ''')
-    
-    # Products table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            category_id INTEGER NOT NULL,
-            photo_group_id INTEGER,
-            photo_message_id INTEGER,
-            photo_file_id TEXT,
-            purchase_price_usd REAL NOT NULL,
-            selling_price_usd REAL NOT NULL,
-            quantity INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            created_by INTEGER,
-            FOREIGN KEY (category_id) REFERENCES categories (id) ON DELETE CASCADE
-        )
-    ''')
-    
-    # Groups table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS groups (
-            group_id INTEGER PRIMARY KEY,
-            group_name TEXT,
-            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            is_active BOOLEAN DEFAULT 1
-        )
-    ''')
-    
-    # Price history table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER,
-            old_purchase_usd REAL,
-            new_purchase_usd REAL,
-            old_selling_usd REAL,
-            new_selling_usd REAL,
-            changed_by INTEGER,
-            changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
+MEDIA_CHANNEL_ID = int(os.getenv('MEDIA_CHANNEL_ID', 0))
 
-# Helper functions
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+# ==================== MA'LUMOTLAR BAZASI ====================
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+import shutil
 
-def is_allowed(user_id: int) -> bool:
-    if user_id == ADMIN_ID:
-        return True
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result is not None
+engine = create_engine('sqlite:///data/shop_bot.db', connect_args={'check_same_thread': False})
+Base = declarative_base()
+Session = sessionmaker(bind=engine)
 
-def usd_to_uzs(usd: float) -> int:
-    return int(usd * 13000)
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True)
+    username = Column(String)
+    first_name = Column(String)
+    last_name = Column(String)
+    is_admin = Column(Boolean, default=False)
+    is_authorized = Column(Boolean, default=False)
+    can_edit = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
 
-# Start command
+class AccessRequest(Base):
+    __tablename__ = 'access_requests'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    status = Column(String, default='pending')
+    created_at = Column(DateTime, default=datetime.now)
+
+class Category(Base):
+    __tablename__ = 'categories'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True)
+    parent_id = Column(Integer, ForeignKey('categories.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    
+    parent = relationship("Category", remote_side=[id], backref="subcategories")
+    products = relationship("Product", back_populates="category")
+
+class Product(Base):
+    __tablename__ = 'products'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, index=True)
+    description = Column(Text, nullable=True)
+    category_id = Column(Integer, ForeignKey('categories.id'))
+    purchase_price_usd = Column(Float, default=0)
+    purchase_price_uzs = Column(Float, default=0)
+    selling_price_usd = Column(Float, default=0)
+    selling_price_uzs = Column(Float, default=0)
+    quantity = Column(Integer, default=0)
+    media_channel_message_id = Column(Integer, nullable=True)
+    media_file_id = Column(String, nullable=True)
+    keywords = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    category = relationship("Category", back_populates="products")
+    price_history = relationship("PriceHistory", back_populates="product")
+
+class PriceHistory(Base):
+    __tablename__ = 'price_history'
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey('products.id'))
+    old_purchase_usd = Column(Float)
+    old_purchase_uzs = Column(Float)
+    old_selling_usd = Column(Float)
+    old_selling_uzs = Column(Float)
+    old_quantity = Column(Integer)
+    new_purchase_usd = Column(Float)
+    new_purchase_uzs = Column(Float)
+    new_selling_usd = Column(Float)
+    new_selling_uzs = Column(Float)
+    new_quantity = Column(Integer)
+    changed_at = Column(DateTime, default=datetime.now)
+    changed_by = Column(Integer)
+    
+    product = relationship("Product", back_populates="price_history")
+
+class MediaChannel(Base):
+    __tablename__ = 'media_channels'
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(Integer, unique=True)
+    channel_name = Column(String)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+def init_db():
+    os.makedirs('data', exist_ok=True)
+    Base.metadata.create_all(engine)
+    
+    session = Session()
+    admin = session.query(User).filter_by(telegram_id=ADMIN_ID).first()
+    if not admin:
+        admin = User(
+            telegram_id=ADMIN_ID,
+            username='admin',
+            first_name='Admin',
+            is_admin=True,
+            is_authorized=True,
+            can_edit=True
+        )
+        session.add(admin)
+        session.commit()
+    session.close()
+
+def backup_database():
+    backup_name = f"data/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    shutil.copy2('data/shop_bot.db', backup_name)
+    return backup_name
+
+def restore_database(backup_file):
+    shutil.copy2(backup_file, 'data/shop_bot.db')
+    return True
+
+# ==================== KEYBOARDS ====================
+
+def get_main_keyboard(user_is_admin=False, user_can_edit=False):
+    buttons = [
+        [InlineKeyboardButton("🔍 Qidirish", callback_data="search")],
+        [InlineKeyboardButton("📂 Kategoriyalar", callback_data="categories")],
+    ]
+    
+    if user_is_admin:
+        buttons.extend([
+            [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
+            [InlineKeyboardButton("➕ Tovar qo'shish", callback_data="add_product")],
+            [InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="users")],
+            [InlineKeyboardButton("📥 Eksport / 📤 Import", callback_data="export_import")],
+            [InlineKeyboardButton("👤 Ruxsat berish", callback_data="grant_access")],
+        ])
+    elif user_can_edit:
+        buttons.extend([
+            [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
+            [InlineKeyboardButton("📥 Eksport", callback_data="export_only")],
+        ])
+    
+    buttons.append([InlineKeyboardButton("❌ Yopish", callback_data="close")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_back_button(callback_data="main_menu"):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Orqaga", callback_data=callback_data)]
+    ])
+
+def get_categories_keyboard(categories, parent_id=None):
+    buttons = []
+    for cat in categories:
+        buttons.append([
+            InlineKeyboardButton(f"📁 {cat['name']}", callback_data=f"cat_{cat['id']}")
+        ])
+    
+    if parent_id is not None:
+        buttons.append([
+            InlineKeyboardButton("➕ Kategoriya qo'shish", callback_data=f"add_cat_{parent_id}")
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 Bosh menyu", callback_data="main_menu")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_product_actions_keyboard(product_id, is_admin=False):
+    buttons = [
+        [InlineKeyboardButton("📝 Tahrirlash", callback_data=f"edit_{product_id}")],
+    ]
+    
+    if is_admin:
+        buttons.extend([
+            [InlineKeyboardButton("🗑 O'chirish", callback_data=f"delete_{product_id}")],
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 Orqaga", callback_data="categories")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_edit_product_keyboard(product_id):
+    buttons = [
+        [InlineKeyboardButton("🖼 Rasm", callback_data=f"edit_photo_{product_id}")],
+        [InlineKeyboardButton("📝 Nomi", callback_data=f"edit_name_{product_id}")],
+        [InlineKeyboardButton("💰 Kelgan narxi ($)", callback_data=f"edit_purchase_usd_{product_id}")],
+        [InlineKeyboardButton("💰 Kelgan narxi (so'm)", callback_data=f"edit_purchase_uzs_{product_id}")],
+        [InlineKeyboardButton("💵 Sotilish narxi ($)", callback_data=f"edit_selling_usd_{product_id}")],
+        [InlineKeyboardButton("💵 Sotilish narxi (so'm)", callback_data=f"edit_selling_uzs_{product_id}")],
+        [InlineKeyboardButton("📦 Soni", callback_data=f"edit_quantity_{product_id}")],
+        [InlineKeyboardButton("🔑 Kalit so'zlar", callback_data=f"edit_keywords_{product_id}")],
+        [InlineKeyboardButton("📂 Kategoriya", callback_data=f"edit_category_{product_id}")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data=f"view_{product_id}")]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+def get_export_import_keyboard():
+    buttons = [
+        [InlineKeyboardButton("📤 Eksport (Excel)", callback_data="export_excel")],
+        [InlineKeyboardButton("📥 Import (Excel)", callback_data="import_excel")],
+        [InlineKeyboardButton("💾 Backup yuklab olish", callback_data="download_backup")],
+        [InlineKeyboardButton("🔄 Backupdan tiklash", callback_data="restore_backup")],
+        [InlineKeyboardButton("🗑 Bazani tozalash", callback_data="clear_database")],
+        [InlineKeyboardButton("🔙 Bosh menyu", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+def get_users_keyboard(users):
+    buttons = []
+    for user in users:
+        status = "✅" if user['is_authorized'] else "⭕️"
+        edit = "✏️" if user['can_edit'] else "👁"
+        buttons.append([
+            InlineKeyboardButton(
+                f"{status} {edit} {user['first_name']} (@{user['username']})", 
+                callback_data=f"user_{user['id']}"
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton("🔙 Bosh menyu", callback_data="main_menu")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_user_actions_keyboard(user_id):
+    buttons = [
+        [InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_{user_id}")],
+        [InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_{user_id}")],
+        [InlineKeyboardButton("✏️ Tahrirlash huquqi", callback_data=f"toggle_edit_{user_id}")],
+        [InlineKeyboardButton("🗑 O'chirish", callback_data=f"remove_user_{user_id}")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="users")]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+def get_access_request_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Ruxsat so'rash", callback_data="request_access")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="main_menu")]
+    ])
+
+def get_approve_reject_keyboard(request_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_req_{request_id}"),
+            InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_req_{request_id}")
+        ]
+    ])
+
+# ==================== UTILS ====================
+
+async def export_to_excel():
+    session = Session()
+    products = session.query(Product).all()
+    data = []
+    
+    for p in products:
+        category = session.query(Category).filter_by(id=p.category_id).first()
+        data.append({
+            'ID': p.id,
+            'Nomi': p.name,
+            'Kategoriya': category.name if category else '',
+            'Kelgan narxi ($)': p.purchase_price_usd,
+            'Kelgan narxi (so\'m)': p.purchase_price_uzs,
+            'Sotilish narxi ($)': p.selling_price_usd,
+            'Sotilish narxi (so\'m)': p.selling_price_uzs,
+            'Soni': p.quantity,
+            'Kalit so\'zlar': p.keywords,
+            'Rasm ID': p.media_channel_message_id,
+            'Yaratilgan': p.created_at,
+            'Yangilangan': p.updated_at
+        })
+    
+    df = pd.DataFrame(data)
+    filename = f"data/export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    df.to_excel(filename, index=False)
+    
+    session.close()
+    return filename
+
+async def import_from_excel(file_path, clear_existing=True):
+    session = Session()
+    
+    try:
+        if clear_existing:
+            session.query(PriceHistory).delete()
+            session.query(Product).delete()
+            session.query(Category).delete()
+        
+        df = pd.read_excel(file_path)
+        categories_cache = {}
+        
+        for _, row in df.iterrows():
+            category_name = row.get('Kategoriya', '')
+            if category_name and category_name not in categories_cache:
+                category = Category(name=category_name)
+                session.add(category)
+                session.flush()
+                categories_cache[category_name] = category.id
+            elif category_name:
+                category_id = categories_cache[category_name]
+            else:
+                category_id = None
+            
+            product = Product(
+                name=row['Nomi'],
+                category_id=category_id,
+                purchase_price_usd=float(row.get('Kelgan narxi ($)', 0)),
+                purchase_price_uzs=float(row.get('Kelgan narxi (so\'m)', 0)),
+                selling_price_usd=float(row.get('Sotilish narxi ($)', 0)),
+                selling_price_uzs=float(row.get('Sotilish narxi (so\'m)', 0)),
+                quantity=int(row.get('Soni', 0)),
+                keywords=row.get('Kalit so\'zlar', ''),
+                media_channel_message_id=row.get('Rasm ID')
+            )
+            session.add(product)
+        
+        session.commit()
+        return True, "Import muvaffaqiyatli yakunlandi"
+    
+    except Exception as e:
+        session.rollback()
+        return False, f"Xatolik: {str(e)}"
+    
+    finally:
+        session.close()
+
+async def get_product_info_text(product, include_history=False):
+    text = f"📦 <b>{product.name}</b>\n\n"
+    
+    if product.description:
+        text += f"📝 {product.description}\n\n"
+    
+    text += f"💰 <b>Kelgan narxi:</b>\n"
+    text += f"   • {product.purchase_price_usd:,.0f} $\n"
+    if product.purchase_price_uzs > 0:
+        text += f"   • {product.purchase_price_uzs:,.0f} so'm\n"
+    
+    text += f"\n💵 <b>Sotilish narxi:</b>\n"
+    text += f"   • {product.selling_price_usd:,.0f} $\n"
+    if product.selling_price_uzs > 0:
+        text += f"   • {product.selling_price_uzs:,.0f} so'm\n"
+    
+    text += f"\n📦 <b>Soni:</b> {product.quantity} dona\n"
+    
+    if product.keywords:
+        text += f"\n🔑 <b>Kalit so'zlar:</b> {product.keywords}\n"
+    
+    text += f"\n📅 <b>Qo'shilgan:</b> {product.created_at.strftime('%d.%m.%Y %H:%M')}"
+    
+    if include_history:
+        session = Session()
+        history = session.query(PriceHistory).filter_by(product_id=product.id).order_by(PriceHistory.changed_at.desc()).limit(5).all()
+        if history:
+            text += f"\n\n📊 <b>So'nggi o'zgarishlar:</b>\n"
+            for h in history:
+                text += f"• {h.changed_at.strftime('%d.%m.%Y %H:%M')}\n"
+                text += f"  Kelgan: {h.old_purchase_usd}$ → {h.new_purchase_usd}$\n"
+                text += f"  Sotilish: {h.old_selling_usd}$ → {h.new_selling_usd}$\n"
+        session.close()
+    
+    return text
+
+# ==================== HANDLERS ====================
+
+# Conversation states
+(SEARCH, ADD_PRODUCT_NAME, ADD_PRODUCT_PHOTO, ADD_PRODUCT_PURCHASE_USD,
+ ADD_PRODUCT_PURCHASE_UZS, ADD_PRODUCT_SELLING_USD, ADD_PRODUCT_SELLING_UZS,
+ ADD_PRODUCT_QUANTITY, ADD_PRODUCT_KEYWORDS, ADD_PRODUCT_CATEGORY,
+ EDIT_WAITING, IMPORT_WAITING, RESTORE_WAITING, GRANT_ACCESS_WAITING) = range(14)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    user_id = user.id
-    username = user.username or "No username"
-    full_name = user.full_name
+    session = Session()
     
-    current_time = format_tashkent_time()
-    
-    # Check if in group
-    if update.effective_chat.type in ['group', 'supergroup']:
-        chat_id = update.effective_chat.id
-        chat_name = update.effective_chat.title
-        
-        # Check if bot is admin
-        try:
-            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-            if bot_member.status not in ['administrator', 'creator']:
-                await update.message.reply_text(
-                    "❌ Bot guruhda admin emas!\n\n"
-                    "Iltimos, botni admin qiling:\n"
-                    "1. Guruh sozlamalari\n"
-                    "2. Adminlar qo'shish\n"
-                    "3. @gazzapchastbot ni admin qiling"
-                )
-                return
-        except Exception as e:
-            await update.message.reply_text("❌ Bot guruhda admin emas!")
-            return
-        
-        # Save group info
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO groups (group_id, group_name, is_active)
-            VALUES (?, ?, 1)
-        ''', (chat_id, chat_name))
-        conn.commit()
-        conn.close()
-        
-        await update.message.reply_text(
-            f"✅ Bot ishga tushdi!\n"
-            f"📦 Rasmlar shu guruhga saqlanadi\n"
-            f"🕐 Toshkent vaqti: {current_time}"
+    db_user = session.query(User).filter_by(telegram_id=user.id).first()
+    if not db_user:
+        db_user = User(
+            telegram_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            is_authorized=False
         )
+        session.add(db_user)
+        session.commit()
+    
+    if update.message and update.message.chat.type in ['group', 'supergroup', 'channel']:
+        channel = session.query(MediaChannel).filter_by(channel_id=update.message.chat.id).first()
+        if not channel:
+            channel = MediaChannel(
+                channel_id=update.message.chat.id,
+                channel_name=update.message.chat.title or "Media Group"
+            )
+            session.add(channel)
+            session.commit()
+        
+        await update.message.reply_text("✅ Bot guruhda ishga tushdi! Rasmlar shu yerga saqlanadi.")
+        session.close()
         return
     
-    # Private chat
-    if is_admin(user_id):
-        await show_admin_menu(update, context, current_time)
-    elif is_allowed(user_id):
-        await show_user_menu(update, context, current_time)
+    session.close()
+    
+    if db_user.is_admin:
+        text = (f"👋 Xush kelibsiz Admin {user.first_name}!\n\n"
+                f"🕐 Toshkent vaqti: {datetime.now().strftime('%H:%M:%S')}\n"
+                f"📅 Sana: {datetime.now().strftime('%d.%m.%Y')}\n\n"
+                f"Kerakli bo'limni tanlang:")
+        await update.message.reply_text(
+            text, 
+            reply_markup=get_main_keyboard(user_is_admin=True)
+        )
+    elif db_user.is_authorized:
+        text = (f"👋 Xush kelibsiz {user.first_name}!\n\n"
+                f"Kerakli bo'limni tanlang:")
+        await update.message.reply_text(
+            text, 
+            reply_markup=get_main_keyboard(user_can_edit=db_user.can_edit)
+        )
     else:
-        await show_request_access(update, context, user_id, username, full_name)
+        text = (f"👋 Xush kelibsiz {user.first_name}!\n\n"
+                f"❌ Botdan foydalanish uchun ruxsat kerak.\n"
+                f"ID raqamingiz: <code>{user.id}</code>\n\n"
+                f"Ruxsat so'rash uchun pastdagi tugmani bosing.")
+        await update.message.reply_text(
+            text,
+            reply_markup=get_access_request_keyboard(),
+            parse_mode='HTML'
+        )
 
-async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, current_time=None):
-    if current_time is None:
-        current_time = format_tashkent_time()
-    
-    keyboard = [
-        [InlineKeyboardButton("🔍 Qidirish", callback_data="search")],
-        [InlineKeyboardButton("📂 Kategoriyalar", callback_data="view_categories")],
-        [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
-        [InlineKeyboardButton("➕ Tovar qo'shish", callback_data="add_product_start")],
-        [InlineKeyboardButton("➕ Kategoriya qo'shish", callback_data="add_category")],
-        [InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="users")],
-        [InlineKeyboardButton("📤 Eksport / Import", callback_data="export_import")]
-    ]
-    
-    await update.message.reply_text(
-        f"👋 Xush kelibsiz, Admin!\n"
-        f"🕐 {current_time}\n\n"
-        f"Kerakli bo'limni tanlang:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🤖 <b>BOT HAQIDA MA'LUMOT</b>
 
-async def show_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, current_time=None):
-    if current_time is None:
-        current_time = format_tashkent_time()
-    
-    keyboard = [
-        [InlineKeyboardButton("🔍 Qidirish", callback_data="search")],
-        [InlineKeyboardButton("📂 Kategoriyalar", callback_data="view_categories")],
-        [InlineKeyboardButton("📊 Statistika", callback_data="stats")]
-    ]
-    
-    await update.message.reply_text(
-        f"👋 Xush kelibsiz!\n"
-        f"🕐 {current_time}\n\n"
-        f"Kerakli bo'limni tanlang:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+<b>🔍 Qidirish:</b>
+• Tovar nomi yoki kalit so'z bilan qidiring
+• Barcha tovarlar orasidan tezkor qidiruv
 
-async def show_request_access(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, username: str, full_name: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM pending_requests WHERE user_id = ?', (user_id,))
-    if cursor.fetchone():
-        await update.message.reply_text("⏳ So'rovingiz allaqachon yuborilgan. Admin tasdiqlashini kuting.")
-        conn.close()
-        return
-    
-    cursor.execute('INSERT INTO pending_requests (user_id, username, full_name) VALUES (?, ?, ?)',
-                  (user_id, username, full_name))
-    conn.commit()
-    conn.close()
-    
-    keyboard = [[InlineKeyboardButton("🟢 Ruxsat so'rash", callback_data=f"request_{user_id}")]]
-    
-    await update.message.reply_text(
-        f"❌ Botdan foydalanish uchun ruxsat kerak.\n\n"
-        f"Sizning ID: `{user_id}`\n"
-        f"👤 @{username}\n\n"
-        f"Ruxsat so'rash tugmasini bosing:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
+<b>📂 Kategoriyalar:</b>
+• Mahsulotlarni kategoriyalar bo'yicha ko'rish
+• Ichma-ich kategoriyalar
 
-# Callback handler
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+<b>📊 Statistika:</b>
+• Jami tovarlar soni
+• Kategoriyalar soni
+• Narxlar statistikasi
+• O'zgarishlar tarixi
+
+<b>➕ Tovar qo'shish (Admin):</b>
+• Nomi, rasmi, narxlari
+• Kelgan va sotilish narxi ($ va so'm)
+• Kalit so'zlar
+
+<b>👥 Foydalanuvchilar (Admin):</b>
+• Ruxsat berish/olib tashlash
+• Tahrirlash huquqini berish
+
+<b>📥 Eksport/Import (Admin):</b>
+• Excel formatida eksport
+• Excel dan import
+• Backup yuklab olish/tiklash
+
+<b>🖼 Rasmlar:</b>
+• Maxsus kanalda saqlanadi
+• Xotira muammosi yo'q
+
+<b>📞 Bog'lanish:</b>
+• Admin: @maestro_o
+• Bot versiyasi: 1.0
+
+🕐 {datetime.now().strftime('%H:%M:%S')}
+📅 {datetime.now().strftime('%d.%m.%Y')}
+    """
+    
+    await update.message.reply_text(help_text, parse_mode='HTML')
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
+    user = update.effective_user
+    session = Session()
+    db_user = session.query(User).filter_by(telegram_id=user.id).first()
+    
+    if not db_user:
+        await query.edit_message_text("❌ Foydalanuvchi topilmadi! /start ni bosing.")
+        session.close()
+        return
+    
     data = query.data
     
-    if not data.startswith('request_') and not is_admin(user_id) and not is_allowed(user_id):
-        await query.edit_message_text("❌ Ruxsat yo'q")
+    # Yopish
+    if data == "close":
+        await query.delete_message()
+        session.close()
         return
     
-    # Main menu
-    if data == "main_menu":
-        current_time = format_tashkent_time()
-        if is_admin(user_id):
-            keyboard = [
-                [InlineKeyboardButton("🔍 Qidirish", callback_data="search")],
-                [InlineKeyboardButton("📂 Kategoriyalar", callback_data="view_categories")],
-                [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
-                [InlineKeyboardButton("➕ Tovar qo'shish", callback_data="add_product_start")],
-                [InlineKeyboardButton("➕ Kategoriya qo'shish", callback_data="add_category")],
-                [InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="users")],
-                [InlineKeyboardButton("📤 Eksport / Import", callback_data="export_import")]
-            ]
+    # Ruxsat so'rash
+    if data == "request_access":
+        existing = session.query(AccessRequest).filter_by(
+            user_id=db_user.id, status='pending'
+        ).first()
+        
+        if existing:
             await query.edit_message_text(
-                f"👋 Admin menyusi\n🕐 {current_time}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                "⏳ Sizning so'rovingiz already yuborilgan. Tasdiqlanishini kuting."
             )
         else:
-            keyboard = [
-                [InlineKeyboardButton("🔍 Qidirish", callback_data="search")],
-                [InlineKeyboardButton("📂 Kategoriyalar", callback_data="view_categories")],
-                [InlineKeyboardButton("📊 Statistika", callback_data="stats")]
-            ]
+            request = AccessRequest(user_id=db_user.id)
+            session.add(request)
+            session.commit()
+            
+            admins = session.query(User).filter_by(is_admin=True).all()
+            for admin in admins:
+                try:
+                    await context.bot.send_message(
+                        admin.telegram_id,
+                        f"🆕 Yangi ruxsat so'rovi!\n\n"
+                        f"👤 Foydalanuvchi: {db_user.first_name}\n"
+                        f"🆔 ID: {db_user.telegram_id}\n"
+                        f"👤 Username: @{db_user.username or 'yoq'}",
+                        reply_markup=get_approve_reject_keyboard(request.id)
+                    )
+                except:
+                    pass
+            
             await query.edit_message_text(
-                f"👋 Bosh menyu\n🕐 {current_time}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                "✅ So'rovingiz yuborildi! Tasdiqlanishini kuting."
             )
+        
+        session.close()
+        return
     
-    # View categories
-    elif data == "view_categories":
-        await show_categories(query, context, None)
-    
-    # Add category
-    elif data == "add_category" and is_admin(user_id):
-        context.user_data['adding_category'] = True
-        context.user_data['parent_category'] = None
-        await query.edit_message_text("➕ Yangi kategoriya nomini kiriting:")
-        return WAITING_CATEGORY_NAME
-    
-    # Start add product
-    elif data == "add_product_start" and is_admin(user_id):
-        await show_category_for_product(query, context)
-    
-    # Category click
-    elif data.startswith("cat_"):
-        cat_id = int(data.split('_')[1])
-        await show_categories(query, context, cat_id)
-    
-    # Select category for product
-    elif data.startswith("select_cat_"):
-        cat_id = int(data.split('_')[2])
-        context.user_data['product_category'] = cat_id
-        context.user_data['adding_product'] = True
-        await query.edit_message_text("📝 Tovar nomini kiriting:")
-        return WAITING_PRODUCT_NAME
-    
-    # Add subcategory
-    elif data.startswith("add_subcat_"):
-        parent_id = int(data.split('_')[2])
-        context.user_data['adding_category'] = True
-        context.user_data['parent_category'] = parent_id
-        await query.edit_message_text("➕ Yangi ichki kategoriya nomini kiriting:")
-        return WAITING_CATEGORY_NAME
-    
-    # Add product to this category
-    elif data.startswith("add_product_"):
-        cat_id = int(data.split('_')[2])
-        context.user_data['product_category'] = cat_id
-        context.user_data['adding_product'] = True
-        await query.edit_message_text("📝 Tovar nomini kiriting:")
-        return WAITING_PRODUCT_NAME
-    
-    # Delete category
-    elif data.startswith("delete_cat_"):
-        cat_id = int(data.split('_')[2])
-        await confirm_delete_category(query, context, cat_id)
-    
-    # Confirm delete category
-    elif data.startswith("confirm_delete_"):
-        cat_id = int(data.split('_')[2])
-        await delete_category(query, cat_id)
-    
-    # Cancel delete
-    elif data.startswith("cancel_delete_"):
-        cat_id = int(data.split('_')[2])
-        await show_categories(query, context, cat_id)
-    
-    # View product
-    elif data.startswith("prod_"):
-        prod_id = int(data.split('_')[1])
-        await show_product(query, context, prod_id)
-    
-    # Edit product
-    elif data.startswith("edit_name_"):
-        prod_id = int(data.split('_')[2])
-        context.user_data['editing_product'] = prod_id
-        context.user_data['edit_field'] = 'name'
-        await query.edit_message_text("✏️ Yangi nomni kiriting:")
-        return WAITING_EDIT_NAME
-    
-    elif data.startswith("edit_purchase_"):
-        prod_id = int(data.split('_')[2])
-        context.user_data['editing_product'] = prod_id
-        context.user_data['edit_field'] = 'purchase'
-        await query.edit_message_text("💰 Yangi kelgan narxni kiriting ($):")
-        return WAITING_EDIT_PURCHASE
-    
-    elif data.startswith("edit_selling_"):
-        prod_id = int(data.split('_')[2])
-        context.user_data['editing_product'] = prod_id
-        context.user_data['edit_field'] = 'selling'
-        await query.edit_message_text("💵 Yangi sotilish narxni kiriting ($):")
-        return WAITING_EDIT_SELLING
-    
-    elif data.startswith("edit_quantity_"):
-        prod_id = int(data.split('_')[2])
-        context.user_data['editing_product'] = prod_id
-        context.user_data['edit_field'] = 'quantity'
-        await query.edit_message_text("🔢 Yangi sonini kiriting:")
-        return WAITING_EDIT_QUANTITY
-    
-    elif data.startswith("edit_photo_"):
-        prod_id = int(data.split('_')[2])
-        context.user_data['editing_product'] = prod_id
-        context.user_data['edit_field'] = 'photo'
-        await query.edit_message_text("🖼 Yangi rasm yuboring:")
-        return WAITING_PRODUCT_PHOTO
-    
-    elif data.startswith("delete_product_"):
-        prod_id = int(data.split('_')[2])
-        await confirm_delete_product(query, context, prod_id)
-    
-    elif data.startswith("confirm_delete_prod_"):
-        prod_id = int(data.split('_')[3])
-        await delete_product(query, prod_id)
-    
-    # Back to product
-    elif data.startswith("back_to_product_"):
-        prod_id = int(data.split('_')[3])
-        await show_product(query, context, prod_id)
-    
-    # Search
-    elif data == "search":
-        context.user_data['searching'] = True
-        await query.edit_message_text("🔍 Qidirish so'zini kiriting:")
-        return WAITING_SEARCH
-    
-    # Statistics
-    elif data == "stats":
-        await show_statistics(query)
-    
-    # Users
-    elif data == "users" and is_admin(user_id):
-        await show_users_menu(query)
-    
-    # Export/Import
-    elif data == "export_import" and is_admin(user_id):
-        await show_export_import_menu(query)
-    
-    elif data == "export_data" and is_admin(user_id):
-        await export_data(query, context)
-    
-    elif data == "import_data" and is_admin(user_id):
-        context.user_data['importing'] = True
-        await query.edit_message_text(
-            "📥 JSON faylni yuboring.\n\n"
-            "⚠️ Ogohlantirish: Import qilganda barcha eski ma'lumotlar o'chadi!"
-        )
-        return WAITING_IMPORT_FILE
-    
-    elif data == "clear_data" and is_admin(user_id):
-        await show_clear_menu(query)
-    
-    elif data == "clear_all" and is_admin(user_id):
-        await clear_all_data(query)
-    
-    elif data == "clear_products" and is_admin(user_id):
-        await clear_products_data(query)
-    
-    elif data == "clear_users" and is_admin(user_id):
-        await clear_users_data(query)
-    
-    # List pending requests
-    elif data == "list_pending" and is_admin(user_id):
-        await show_pending_requests(query)
-    
-    # List all users
-    elif data == "list_users" and is_admin(user_id):
-        await show_all_users(query)
-    
-    # Add user
-    elif data == "add_user" and is_admin(user_id):
-        context.user_data['adding_user'] = True
-        await query.edit_message_text("👤 Foydalanuvchi ID sini kiriting:")
-        return WAITING_USER_ID
-    
-    # Request access
-    elif data.startswith("request_"):
-        req_user_id = int(data.split('_')[1])
-        await send_request_to_admin(query, context, req_user_id)
-    
-    # Approve user
-    elif data.startswith("approve_"):
-        await approve_user(query, context, data)
-    
-    # Reject user
-    elif data.startswith("reject_"):
-        await reject_user(query, context, data)
-
-# Category functions
-async def show_categories(query, context, parent_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    if parent_id:
-        cursor.execute('SELECT name FROM categories WHERE id = ?', (parent_id,))
-        parent = cursor.fetchone()
-        if not parent:
-            await query.edit_message_text("❌ Kategoriya topilmadi")
-            conn.close()
+    # So'rovni tasdiqlash/rad etish
+    if data.startswith("approve_req_") or data.startswith("reject_req_"):
+        if not db_user or not db_user.is_admin:
+            await query.edit_message_text("❌ Bu amalni bajarish uchun admin huquqi kerak.")
+            session.close()
             return
-        title = f"📂 {parent[0]}\n\n"
         
-        # Get subcategories
-        cursor.execute('SELECT id, name FROM categories WHERE parent_id = ? ORDER BY name', (parent_id,))
-        categories = cursor.fetchall()
+        request_id = int(data.split("_")[2])
+        request = session.query(AccessRequest).filter_by(id=request_id).first()
         
-        # Get products in this category
-        cursor.execute('SELECT id, name, quantity, selling_price_usd FROM products WHERE category_id = ? ORDER BY name', (parent_id,))
-        products = cursor.fetchall()
-    else:
-        title = "📂 Bosh kategoriyalar\n\n"
-        cursor.execute('SELECT id, name FROM categories WHERE parent_id IS NULL ORDER BY name')
-        categories = cursor.fetchall()
-        products = []
-    
-    keyboard = []
-    
-    # Add categories
-    for cat_id, cat_name in categories:
-        keyboard.append([InlineKeyboardButton(f"📁 {cat_name}", callback_data=f"cat_{cat_id}")])
-    
-    # Add products
-    for prod_id, prod_name, qty, price in products:
-        keyboard.append([InlineKeyboardButton(f"📦 {prod_name} ({qty} dona) - ${price}", callback_data=f"prod_{prod_id}")])
-    
-    # Add action buttons for admin
-    if is_admin(query.from_user.id):
-        if parent_id:
-            keyboard.append([
-                InlineKeyboardButton("➕ Ichki kategoriya", callback_data=f"add_subcat_{parent_id}"),
-                InlineKeyboardButton("➕ Tovar", callback_data=f"add_product_{parent_id}")
-            ])
-            keyboard.append([InlineKeyboardButton("🗑 Kategoriyani o'chirish", callback_data=f"delete_cat_{parent_id}")])
-        else:
-            keyboard.append([InlineKeyboardButton("➕ Kategoriya qo'shish", callback_data="add_category")])
-    
-    # Back button
-    if parent_id:
-        cursor.execute('SELECT parent_id FROM categories WHERE id = ?', (parent_id,))
-        back_parent = cursor.fetchone()
-        if back_parent and back_parent[0]:
-            keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"cat_{back_parent[0]}")])
-        else:
-            keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="view_categories")])
-    else:
-        keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="main_menu")])
-    
-    conn.close()
-    
-    await query.edit_message_text(title, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def show_category_for_product(query, context):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT id, name FROM categories ORDER BY name')
-    categories = cursor.fetchall()
-    conn.close()
-    
-    if not categories:
-        await query.edit_message_text("❌ Avval kategoriya yarating!")
-        return
-    
-    keyboard = []
-    for cat_id, cat_name in categories:
-        keyboard.append([InlineKeyboardButton(cat_name, callback_data=f"select_cat_{cat_id}")])
-    keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="main_menu")])
-    
-    await query.edit_message_text(
-        "📦 Tovar qaysi kategoriyaga tegishli?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def confirm_delete_category(query, context, cat_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT name FROM categories WHERE id = ?', (cat_id,))
-    cat_name = cursor.fetchone()
-    if not cat_name:
-        await query.edit_message_text("❌ Kategoriya topilmadi")
-        conn.close()
-        return
-    
-    # Count subcategories
-    cursor.execute('SELECT COUNT(*) FROM categories WHERE parent_id = ?', (cat_id,))
-    sub_count = cursor.fetchone()[0]
-    
-    # Count products
-    cursor.execute('SELECT COUNT(*) FROM products WHERE category_id = ?', (cat_id,))
-    prod_count = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    keyboard = [
-        [InlineKeyboardButton("❌ Ha, o'chir", callback_data=f"confirm_delete_{cat_id}")],
-        [InlineKeyboardButton("⬅️ Yo'q, orqaga", callback_data=f"cat_{cat_id}")]
-    ]
-    
-    await query.edit_message_text(
-        f"⚠️ **Ogohlantirish!**\n\n"
-        f"Siz \"{cat_name[0]}\" kategoriyasini o'chirmoqchisiz.\n\n"
-        f"Bu kategoriya ichida:\n"
-        f"- {sub_count} ta ichki kategoriya\n"
-        f"- {prod_count} ta tovar\n\n"
-        f"**HAMMASI BIRGA O'CHADI!**\n\n"
-        f"Haqiqatan ham o'chirmoqchimisiz?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def delete_category(query, cat_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Get category name
-    cursor.execute('SELECT name FROM categories WHERE id = ?', (cat_id,))
-    cat_name = cursor.fetchone()
-    
-    # Delete category (cascade will delete subcategories and products)
-    cursor.execute('DELETE FROM categories WHERE id = ?', (cat_id,))
-    conn.commit()
-    conn.close()
-    
-    await query.edit_message_text(f"✅ '{cat_name[0]}' kategoriyasi va uning barcha ichki kategoriyalari, tovarlari o'chirildi!")
-    
-    # Go back to parent
-    await show_categories(query, None, None)
-
-# Product functions
-async def show_product(query, context, product_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT p.*, c.name as category_name, c.parent_id 
-        FROM products p
-        LEFT JOIN categories c ON p.category_id = c.id
-        WHERE p.id = ?
-    ''', (product_id,))
-    
-    product_data = cursor.fetchone()
-    conn.close()
-    
-    if not product_data:
-        await query.edit_message_text("❌ Tovar topilmadi")
-        return
-    
-    # Get column names
-    columns = ['id', 'name', 'category_id', 'photo_group_id', 'photo_message_id',
-               'photo_file_id', 'purchase_price_usd', 'selling_price_usd', 'quantity',
-               'created_at', 'updated_at', 'created_by', 'category_name', 'parent_id']
-    
-    product = dict(zip(columns, product_data))
-    
-    # Try to forward photo if exists
-    if product['photo_group_id'] and product['photo_message_id']:
-        try:
-            await context.bot.forward_message(
-                chat_id=query.message.chat_id,
-                from_chat_id=product['photo_group_id'],
-                message_id=product['photo_message_id']
-            )
-        except:
-            pass
-    
-    text = f"📦 **{product['name']}**\n\n"
-    text += f"📂 Kategoriya: {product['category_name']}\n\n"
-    text += f"💰 Kelgan: ${product['purchase_price_usd']} ({usd_to_uzs(product['purchase_price_usd']):,} so'm)\n"
-    text += f"💵 Sotilish: ${product['selling_price_usd']} ({usd_to_uzs(product['selling_price_usd']):,} so'm)\n"
-    text += f"📊 Soni: {product['quantity']} dona\n"
-    text += f"💲 Jami kelgan: ${product['purchase_price_usd'] * product['quantity']}\n\n"
-    text += f"📅 Qo'shilgan: {product['created_at'][:10]}\n"
-    
-    # Keyboard for admin
-    keyboard = []
-    if is_admin(query.from_user.id):
-        keyboard = [
-            [
-                InlineKeyboardButton("🖼 Rasm", callback_data=f"edit_photo_{product['id']}"),
-                InlineKeyboardButton("📝 Nomi", callback_data=f"edit_name_{product['id']}")
-            ],
-            [
-                InlineKeyboardButton("💰 Kelgan", callback_data=f"edit_purchase_{product['id']}"),
-                InlineKeyboardButton("💵 Sotilish", callback_data=f"edit_selling_{product['id']}")
-            ],
-            [
-                InlineKeyboardButton("🔢 Soni", callback_data=f"edit_quantity_{product['id']}")
-            ],
-            [InlineKeyboardButton("🗑 O'chirish", callback_data=f"delete_product_{product['id']}")]
-        ]
-    
-    # Back button
-    if product['parent_id']:
-        back_data = f"cat_{product['parent_id']}"
-    else:
-        back_data = f"cat_{product['category_id']}"
-    
-    keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=back_data)])
-    
-    await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-async def confirm_delete_product(query, context, product_id):
-    context.user_data['delete_product'] = product_id
-    keyboard = [
-        [InlineKeyboardButton("❌ Ha, o'chir", callback_data=f"confirm_delete_prod_{product_id}")],
-        [InlineKeyboardButton("⬅️ Yo'q, orqaga", callback_data=f"back_to_product_{product_id}")]
-    ]
-    await query.edit_message_text("⚠️ Tovarni o'chirishni tasdiqlaysizmi?", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def delete_product(query, product_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM products WHERE id = ?', (product_id,))
-    conn.commit()
-    conn.close()
-    
-    await query.edit_message_text("✅ Tovar o'chirildi!")
-
-# Statistics
-async def show_statistics(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Total stats
-    cursor.execute('''
-        SELECT 
-            COUNT(*) as total_products,
-            SUM(quantity) as total_items,
-            SUM(purchase_price_usd * quantity) as total_purchase,
-            SUM(selling_price_usd * quantity) as total_selling
-        FROM products
-    ''')
-    stats = cursor.fetchone()
-    
-    # Category stats
-    cursor.execute('''
-        SELECT c.name, COUNT(p.id), SUM(p.quantity)
-        FROM categories c
-        LEFT JOIN products p ON c.id = p.category_id
-        GROUP BY c.id
-        ORDER BY c.name
-    ''')
-    category_stats = cursor.fetchall()
-    
-    conn.close()
-    
-    current_time = format_tashkent_time()
-    
-    text = f"📊 **Statistika** ({current_time})\n\n"
-    text += f"📦 Jami tovarlar: {stats[0] or 0} tur\n"
-    text += f"🔢 Jami dona: {stats[1] or 0} dona\n"
-    text += f"💰 Kelgan: ${stats[2] or 0:,.0f}\n"
-    text += f"💵 Sotilish: ${stats[3] or 0:,.0f}\n\n"
-    
-    text += "📂 **Kategoriyalar:**\n"
-    for name, count, items in category_stats:
-        if count > 0:
-            text += f"• {name}: {count} tur ({items or 0} dona)\n"
-    
-    keyboard = [[InlineKeyboardButton("⬅️ Orqaga", callback_data="main_menu")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-# Search
-async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('searching'):
-        return
-    
-    search_text = update.message.text.lower()
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT p.id, p.name, c.name, p.quantity, p.selling_price_usd
-        FROM products p
-        LEFT JOIN categories c ON p.category_id = c.id
-        WHERE LOWER(p.name) LIKE ? OR LOWER(c.name) LIKE ?
-        ORDER BY p.name
-    ''', (f'%{search_text}%', f'%{search_text}%'))
-    
-    results = cursor.fetchall()
-    conn.close()
-    
-    context.user_data['searching'] = False
-    
-    if not results:
-        await update.message.reply_text("❌ Hech narsa topilmadi")
-        return
-    
-    keyboard = []
-    for prod_id, prod_name, cat_name, qty, price in results:
-        keyboard.append([
-            InlineKeyboardButton(f"{prod_name} ({cat_name}) - {qty} dona", callback_data=f"prod_{prod_id}")
-        ])
-    
-    keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="main_menu")])
-    
-    await update.message.reply_text(
-        f"🔍 {len(results)} ta natija topildi:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# Category name handler
-async def handle_category_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('adding_category'):
-        return ConversationHandler.END
-    
-    category_name = update.message.text
-    parent_id = context.user_data.get('parent_category')
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    if parent_id:
-        cursor.execute('INSERT INTO categories (name, parent_id) VALUES (?, ?)',
-                      (category_name, parent_id))
-    else:
-        cursor.execute('INSERT INTO categories (name) VALUES (?)', (category_name,))
-    
-    conn.commit()
-    conn.close()
-    
-    context.user_data['adding_category'] = False
-    context.user_data.pop('parent_category', None)
-    
-    current_time = format_tashkent_time()
-    await update.message.reply_text(f"✅ '{category_name}' kategoriyasi qo'shildi! ({current_time})")
-    
-    # Show categories
-    if parent_id:
-        # Go to parent category
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT parent_id FROM categories WHERE id = ?', (parent_id,))
-        result = cursor.fetchone()
-        conn.close()
-        
-        # Create a fake query to show categories
-        class FakeQuery:
-            def __init__(self, user_id):
-                self.from_user.id = user_id
-                self.message.chat_id = update.effective_chat.id
-                self.data = f"cat_{parent_id}"
-        
-        fake_query = type('obj', (object,), {
-            'from_user': type('obj', (object,), {'id': update.effective_user.id})(),
-            'message': type('obj', (object,), {'chat_id': update.effective_chat.id})(),
-            'data': f"cat_{parent_id}",
-            'edit_message_text': lambda text, reply_markup: None
-        })
-        
-        await show_categories(fake_query, context, parent_id)
-    else:
-        # Show admin menu
-        if is_admin(update.effective_user.id):
-            await show_admin_menu(update, context, current_time)
-    
-    return ConversationHandler.END
-
-# Product name handler
-async def handle_product_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('adding_product'):
-        return ConversationHandler.END
-    
-    context.user_data['product_name'] = update.message.text
-    
-    await update.message.reply_text(
-        "🖼 Rasm yuboring yoki 'skip' deb yozing:"
-    )
-    return WAITING_PRODUCT_PHOTO
-
-# Product photo handler
-async def handle_product_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('adding_product'):
-        return ConversationHandler.END
-    
-    # Check if editing existing product
-    editing_product_id = context.user_data.get('editing_product')
-    
-    if update.message.photo:
-        # Check if group exists
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT group_id FROM groups WHERE is_active = 1 LIMIT 1')
-        group = cursor.fetchone()
-        conn.close()
-        
-        if not group:
-            await update.message.reply_text(
-                "❌ Rasm saqlash uchun guruh topilmadi!\n\n"
-                "1. Guruh yarating\n"
-                "2. Botni admin qiling\n"
-                "3. Guruhda /start yozing"
-            )
-            return WAITING_PRODUCT_PHOTO
-        
-        group_id = group[0]
-        
-        # Check if bot is admin
-        try:
-            bot_member = await context.bot.get_chat_member(group_id, context.bot.id)
-            if bot_member.status not in ['administrator', 'creator']:
-                await update.message.reply_text(
-                    "❌ Bot guruhda admin emas!\n\n"
-                    "Iltimos, botni guruhda admin qiling!"
+        if data.startswith("approve_req_"):
+            request.status = 'approved'
+            request.user.is_authorized = True
+            session.commit()
+            
+            try:
+                await context.bot.send_message(
+                    request.user.telegram_id,
+                    "✅ Sizning so'rovingiz tasdiqlandi! Endi botdan foydalanishingiz mumkin.\n"
+                    "Ishlatish uchun /start ni bosing."
                 )
-                return WAITING_PRODUCT_PHOTO
+            except:
+                pass
             
-            # Send photo
-            photo = update.message.photo[-1]
-            product_name = context.user_data.get('product_name', 'product')
-            sent = await context.bot.send_photo(
-                chat_id=group_id,
-                photo=photo.file_id,
-                caption=f"#{product_name.replace(' ', '_')}"
+            await query.edit_message_text(
+                f"✅ Foydalanuvchi {request.user.first_name} tasdiqlandi!"
             )
-            
-            context.user_data['photo_group_id'] = group_id
-            context.user_data['photo_message_id'] = sent.message_id
-            context.user_data['photo_file_id'] = photo.file_id
-            
-            await update.message.reply_text("✅ Rasm saqlandi!")
-            
-        except Exception as e:
-            await update.message.reply_text("❌ Rasm saqlashda xatolik!")
-            return WAITING_PRODUCT_PHOTO
-    else:
-        # Skip photo
-        context.user_data['photo_group_id'] = None
-        context.user_data['photo_message_id'] = None
-        context.user_data['photo_file_id'] = None
-        await update.message.reply_text("✅ Rasmsiz davom etamiz")
-    
-    if editing_product_id:
-        # Update existing product
-        await update_product_photo(update, context, editing_product_id)
-        return ConversationHandler.END
-    else:
-        # New product - ask for price
-        await update.message.reply_text("💰 Kelgan narxini kiriting ($):")
-        return WAITING_PURCHASE_PRICE
-
-# Purchase price handler
-async def handle_purchase_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        price = float(update.message.text)
-        context.user_data['purchase_price'] = price
-        await update.message.reply_text("💵 Sotilish narxini kiriting ($):")
-        return WAITING_SELLING_PRICE
-    except ValueError:
-        await update.message.reply_text("❌ Noto'g'ri format. Faqat son kiriting (masalan: 15.5):")
-        return WAITING_PURCHASE_PRICE
-
-# Selling price handler
-async def handle_selling_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        price = float(update.message.text)
-        context.user_data['selling_price'] = price
-        await update.message.reply_text("🔢 Soni (dona) ni kiriting:")
-        return WAITING_QUANTITY
-    except ValueError:
-        await update.message.reply_text("❌ Noto'g'ri format. Faqat son kiriting:")
-        return WAITING_SELLING_PRICE
-
-# Quantity handler
-async def handle_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        quantity = int(update.message.text)
-        
-        # Save product
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO products (
-                name, category_id, photo_group_id, photo_message_id,
-                photo_file_id, purchase_price_usd, selling_price_usd,
-                quantity, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            context.user_data['product_name'],
-            context.user_data['product_category'],
-            context.user_data.get('photo_group_id'),
-            context.user_data.get('photo_message_id'),
-            context.user_data.get('photo_file_id'),
-            context.user_data['purchase_price'],
-            context.user_data['selling_price'],
-            quantity,
-            update.effective_user.id
-        ))
-        
-        conn.commit()
-        conn.close()
-        
-        # Clear user data
-        keys = ['adding_product', 'product_name', 'product_category',
-                'photo_group_id', 'photo_message_id', 'photo_file_id',
-                'purchase_price', 'selling_price']
-        for key in keys:
-            context.user_data.pop(key, None)
-        
-        current_time = format_tashkent_time()
-        await update.message.reply_text(f"✅ Tovar muvaffaqiyatli qo'shildi! ({current_time})")
-        
-        if is_admin(update.effective_user.id):
-            await show_admin_menu(update, context, current_time)
         else:
-            await show_user_menu(update, context, current_time)
-        
-        return ConversationHandler.END
-        
-    except ValueError:
-        await update.message.reply_text("❌ Noto'g'ri format. Butun son kiriting:")
-        return WAITING_QUANTITY
-
-# Edit handlers
-async def handle_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    product_id = context.user_data.get('editing_product')
-    if not product_id:
-        return ConversationHandler.END
-    
-    new_name = update.message.text
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE products SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                  (new_name, product_id))
-    conn.commit()
-    conn.close()
-    
-    context.user_data.pop('editing_product', None)
-    
-    await update.message.reply_text(f"✅ Nomi o'zgartirildi: {new_name}")
-    
-    # Show product
-    class FakeQuery:
-        def __init__(self, user_id, chat_id):
-            self.from_user = type('obj', (object,), {'id': user_id})()
-            self.message = type('obj', (object,), {'chat_id': chat_id})()
-            self.data = f"prod_{product_id}"
-    
-    fake_query = FakeQuery(update.effective_user.id, update.effective_chat.id)
-    await show_product(fake_query, context, product_id)
-    
-    return ConversationHandler.END
-
-async def handle_edit_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    product_id = context.user_data.get('editing_product')
-    if not product_id:
-        return ConversationHandler.END
-    
-    try:
-        new_price = float(update.message.text)
-        
-        # Get old price
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT purchase_price_usd FROM products WHERE id = ?', (product_id,))
-        old_price = cursor.fetchone()[0]
-        
-        # Update
-        cursor.execute('UPDATE products SET purchase_price_usd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                      (new_price, product_id))
-        
-        # Save to history
-        cursor.execute('''
-            INSERT INTO price_history (product_id, old_purchase_usd, new_purchase_usd, changed_by)
-            VALUES (?, ?, ?, ?)
-        ''', (product_id, old_price, new_price, update.effective_user.id))
-        
-        conn.commit()
-        conn.close()
-        
-        context.user_data.pop('editing_product', None)
-        
-        await update.message.reply_text(f"✅ Kelgan narx o'zgartirildi: ${old_price} → ${new_price}")
-        
-        # Show product
-        class FakeQuery:
-            def __init__(self, user_id, chat_id):
-                self.from_user = type('obj', (object,), {'id': user_id})()
-                self.message = type('obj', (object,), {'chat_id': chat_id})()
-                self.data = f"prod_{product_id}"
-        
-        fake_query = FakeQuery(update.effective_user.id, update.effective_chat.id)
-        await show_product(fake_query, context, product_id)
-        
-    except ValueError:
-        await update.message.reply_text("❌ Noto'g'ri format. Qaytadan kiriting:")
-        return WAITING_EDIT_PURCHASE
-    
-    return ConversationHandler.END
-
-async def handle_edit_selling(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    product_id = context.user_data.get('editing_product')
-    if not product_id:
-        return ConversationHandler.END
-    
-    try:
-        new_price = float(update.message.text)
-        
-        # Get old price
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT selling_price_usd FROM products WHERE id = ?', (product_id,))
-        old_price = cursor.fetchone()[0]
-        
-        # Update
-        cursor.execute('UPDATE products SET selling_price_usd = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                      (new_price, product_id))
-        
-        # Save to history
-        cursor.execute('''
-            INSERT INTO price_history (product_id, old_selling_usd, new_selling_usd, changed_by)
-            VALUES (?, ?, ?, ?)
-        ''', (product_id, old_price, new_price, update.effective_user.id))
-        
-        conn.commit()
-        conn.close()
-        
-        context.user_data.pop('editing_product', None)
-        
-        await update.message.reply_text(f"✅ Sotilish narxi o'zgartirildi: ${old_price} → ${new_price}")
-        
-        # Show product
-        class FakeQuery:
-            def __init__(self, user_id, chat_id):
-                self.from_user = type('obj', (object,), {'id': user_id})()
-                self.message = type('obj', (object,), {'chat_id': chat_id})()
-                self.data = f"prod_{product_id}"
-        
-        fake_query = FakeQuery(update.effective_user.id, update.effective_chat.id)
-        await show_product(fake_query, context, product_id)
-        
-    except ValueError:
-        await update.message.reply_text("❌ Noto'g'ri format. Qaytadan kiriting:")
-        return WAITING_EDIT_SELLING
-    
-    return ConversationHandler.END
-
-async def handle_edit_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    product_id = context.user_data.get('editing_product')
-    if not product_id:
-        return ConversationHandler.END
-    
-    try:
-        new_quantity = int(update.message.text)
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('UPDATE products SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                      (new_quantity, product_id))
-        conn.commit()
-        conn.close()
-        
-        context.user_data.pop('editing_product', None)
-        
-        await update.message.reply_text(f"✅ Soni o'zgartirildi: {new_quantity} dona")
-        
-        # Show product
-        class FakeQuery:
-            def __init__(self, user_id, chat_id):
-                self.from_user = type('obj', (object,), {'id': user_id})()
-                self.message = type('obj', (object,), {'chat_id': chat_id})()
-                self.data = f"prod_{product_id}"
-        
-        fake_query = FakeQuery(update.effective_user.id, update.effective_chat.id)
-        await show_product(fake_query, context, product_id)
-        
-    except ValueError:
-        await update.message.reply_text("❌ Noto'g'ri format. Butun son kiriting:")
-        return WAITING_EDIT_QUANTITY
-    
-    return ConversationHandler.END
-
-async def update_product_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE products 
-        SET photo_group_id = ?, photo_message_id = ?, photo_file_id = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    ''', (
-        context.user_data.get('photo_group_id'),
-        context.user_data.get('photo_message_id'),
-        context.user_data.get('photo_file_id'),
-        product_id
-    ))
-    conn.commit()
-    conn.close()
-    
-    context.user_data.pop('editing_product', None)
-    
-    await update.message.reply_text("✅ Rasm yangilandi!")
-    
-    # Show product
-    class FakeQuery:
-        def __init__(self, user_id, chat_id):
-            self.from_user = type('obj', (object,), {'id': user_id})()
-            self.message = type('obj', (object,), {'chat_id': chat_id})()
-            self.data = f"prod_{product_id}"
-    
-    fake_query = FakeQuery(update.effective_user.id, update.effective_chat.id)
-    await show_product(fake_query, context, product_id)
-
-# User management functions
-async def show_users_menu(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT COUNT(*) FROM users')
-    users_count = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM pending_requests')
-    pending_count = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    keyboard = [
-        [InlineKeyboardButton(f"📋 Barcha foydalanuvchilar ({users_count})", callback_data="list_users")],
-        [InlineKeyboardButton(f"⏳ So'rovlar ({pending_count})", callback_data="list_pending")],
-        [InlineKeyboardButton("➕ Yangi qo'shish", callback_data="add_user")],
-        [InlineKeyboardButton("⬅️ Orqaga", callback_data="main_menu")]
-    ]
-    
-    await query.edit_message_text(
-        "👥 **Foydalanuvchilarni boshqarish**",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def show_pending_requests(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id, username, full_name, request_date FROM pending_requests ORDER BY request_date DESC')
-    pending = cursor.fetchall()
-    conn.close()
-    
-    if not pending:
-        await query.edit_message_text("⏳ Kutayotgan so'rovlar yo'q")
-        return
-    
-    text = "⏳ **Kutayotgan so'rovlar:**\n\n"
-    for user_id, username, full_name, req_date in pending:
-        text += f"• {full_name} (@{username})\n"
-        text += f"  ID: `{user_id}`\n"
-        text += f"  Sana: {req_date[:16]}\n\n"
-    
-    keyboard = [[InlineKeyboardButton("⬅️ Orqaga", callback_data="users")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-async def show_all_users(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id, username, full_name, added_date FROM users ORDER BY added_date DESC')
-    users = cursor.fetchall()
-    conn.close()
-    
-    if not users:
-        await query.edit_message_text("👥 Foydalanuvchilar yo'q")
-        return
-    
-    text = "👥 **Barcha foydalanuvchilar:**\n\n"
-    for user_id, username, full_name, added_date in users[:10]:
-        text += f"• {full_name} (@{username})\n"
-        text += f"  ID: `{user_id}`\n"
-        text += f"  Qo'shilgan: {added_date[:16]}\n\n"
-    
-    if len(users) > 10:
-        text += f"... va yana {len(users) - 10} ta"
-    
-    keyboard = [[InlineKeyboardButton("⬅️ Orqaga", callback_data="users")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-async def handle_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('adding_user'):
-        return ConversationHandler.END
-    
-    try:
-        user_id = int(update.message.text)
-        
-        # Check if user exists
-        try:
-            chat = await context.bot.get_chat(user_id)
-            username = chat.username or "No username"
-            full_name = chat.full_name or "No name"
-        except:
-            await update.message.reply_text("❌ Foydalanuvchi topilmadi. ID ni tekshiring.")
-            return WAITING_USER_ID
-        
-        # Add to users
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO users (user_id, username, full_name, added_by) VALUES (?, ?, ?, ?)',
-                      (user_id, username, full_name, ADMIN_ID))
-        conn.commit()
-        conn.close()
-        
-        context.user_data['adding_user'] = False
-        
-        await update.message.reply_text(f"✅ {full_name} (@{username}) qo'shildi!")
-        
-        # Notify user
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="✅ Sizga botdan foydalanish ruxsati berildi! /start"
+            request.status = 'rejected'
+            session.commit()
+            
+            try:
+                await context.bot.send_message(
+                    request.user.telegram_id,
+                    "❌ Sizning so'rovingiz rad etildi."
+                )
+            except:
+                pass
+            
+            await query.edit_message_text(
+                f"❌ Foydalanuvchi {request.user.first_name} rad etildi!"
             )
-        except:
-            pass
         
-        if is_admin(update.effective_user.id):
-            await show_admin_menu(update, context, format_tashkent_time())
-        
-    except ValueError:
-        await update.message.reply_text("❌ Noto'g'ri format. ID raqam kiriting:")
-        return WAITING_USER_ID
+        session.close()
+        return
     
-    return ConversationHandler.END
-
-async def send_request_to_admin(query, context, user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT username, full_name FROM pending_requests WHERE user_id = ?', (user_id,))
-    user = cursor.fetchone()
-    conn.close()
+    # Asosiy menyu
+    if data == "main_menu":
+        if db_user.is_admin:
+            text = (f"👋 Xush kelibsiz Admin {user.first_name}!\n\n"
+                    f"🕐 Toshkent vaqti: {datetime.now().strftime('%H:%M:%S')}\n"
+                    f"📅 Sana: {datetime.now().strftime('%d.%m.%Y')}\n\n"
+                    f"Kerakli bo'limni tanlang:")
+            await query.edit_message_text(
+                text, 
+                reply_markup=get_main_keyboard(user_is_admin=True)
+            )
+        else:
+            await query.edit_message_text(
+                "Kerakli bo'limni tanlang:",
+                reply_markup=get_main_keyboard(user_can_edit=db_user.can_edit)
+            )
+        session.close()
+        return
     
-    if user:
-        username, full_name = user
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_{user_id}"),
-                InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_{user_id}")
-            ]
-        ]
-        
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"🆕 **Yangi ruxsat so'rovi!**\n\n"
-                 f"👤 Foydalanuvchi: @{username}\n"
-                 f"📝 Ism: {full_name}\n"
-                 f"🆔 ID: {user_id}\n"
-                 f"🕐 {format_tashkent_time()}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.MARKDOWN
+    # Qidirish
+    if data == "search":
+        context.user_data['state'] = SEARCH
+        await query.edit_message_text(
+            "🔍 Qidirish uchun tovar nomi yoki kalit so'zni kiriting:",
+            reply_markup=get_back_button()
         )
-        
-        await query.edit_message_text("✅ So'rovingiz yuborildi. Admin tasdiqlashini kuting.")
-
-async def approve_user(query, context, data):
-    user_id = int(data.split('_')[1])
+        session.close()
+        return
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT username, full_name FROM pending_requests WHERE user_id = ?', (user_id,))
-    user = cursor.fetchone()
+    # Kategoriyalar
+    if data == "categories":
+        categories = session.query(Category).filter_by(parent_id=None).all()
+        cat_list = [{'id': c.id, 'name': c.name} for c in categories]
+        await query.edit_message_text(
+            "📂 Kategoriyalar:",
+            reply_markup=get_categories_keyboard(cat_list)
+        )
+        session.close()
+        return
     
-    if user:
-        username, full_name = user
-        cursor.execute('INSERT INTO users (user_id, username, full_name, added_by) VALUES (?, ?, ?, ?)',
-                      (user_id, username, full_name, ADMIN_ID))
-        cursor.execute('DELETE FROM pending_requests WHERE user_id = ?', (user_id,))
-        conn.commit()
+    # Kategoriya ichiga kirish
+    if data.startswith("cat_"):
+        category_id = int(data.split("_")[1])
+        category = session.query(Category).filter_by(id=category_id).first()
         
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="✅ Ruxsatingiz tasdiqlandi! /start"
+        if not category:
+            await query.edit_message_text("❌ Kategoriya topilmadi!")
+            session.close()
+            return
+        
+        subcats = session.query(Category).filter_by(parent_id=category_id).all()
+        products = session.query(Product).filter_by(category_id=category_id).all()
+        
+        text = f"📂 {category.name}\n\n"
+        
+        if subcats:
+            text += "📁 Pastki kategoriyalar:\n"
+            for sc in subcats:
+                text += f"• {sc.name}\n"
+            text += "\n"
+        
+        if products:
+            text += "📦 Tovarlar:\n"
+            for p in products:
+                text += f"• {p.name} - {p.quantity} dona\n"
+        else:
+            text += "Bu kategoriyada tovarlar yo'q."
+        
+        buttons = []
+        for sc in subcats:
+            buttons.append([InlineKeyboardButton(f"📁 {sc.name}", callback_data=f"cat_{sc.id}")])
+        
+        for p in products:
+            buttons.append([InlineKeyboardButton(f"📦 {p.name}", callback_data=f"view_{p.id}")])
+        
+        if db_user.is_admin:
+            buttons.append([InlineKeyboardButton("➕ Tovar qo'shish", callback_data=f"add_product_cat_{category_id}")])
+            buttons.append([InlineKeyboardButton("➕ Subkategoriya", callback_data=f"add_cat_{category_id}")])
+        
+        buttons.append([InlineKeyboardButton("🔙 Orqaga", callback_data="categories")])
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        session.close()
+        return
+    
+    # Tovarni ko'rish
+    if data.startswith("view_"):
+        product_id = int(data.split("_")[1])
+        product = session.query(Product).filter_by(id=product_id).first()
+        
+        if not product:
+            await query.edit_message_text("❌ Tovar topilmadi!")
+            session.close()
+            return
+        
+        text = await get_product_info_text(product, include_history=True)
+        
+        if product.media_channel_message_id:
+            try:
+                await context.bot.forward_message(
+                    chat_id=user.id,
+                    from_chat_id=MEDIA_CHANNEL_ID,
+                    message_id=product.media_channel_message_id
+                )
+            except:
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text="❌ Rasm topilmadi yoki kanaldan o'chirilgan!"
+                )
+        
+        await query.edit_message_text(
+            text,
+            reply_markup=get_product_actions_keyboard(product_id, db_user.is_admin),
+            parse_mode='HTML'
+        )
+        session.close()
+        return
+    
+    # Tahrirlash
+    if data.startswith("edit_"):
+        if not db_user.is_admin and not db_user.can_edit:
+            await query.edit_message_text("❌ Sizda tahrirlash huquqi yo'q!")
+            session.close()
+            return
+        
+        parts = data.split("_")
+        if len(parts) == 2:
+            product_id = int(parts[1])
+            await query.edit_message_text(
+                "Qaysi ma'lumotni tahrirlash kerak?",
+                reply_markup=get_edit_product_keyboard(product_id)
             )
-        except:
-            pass
-        
-        await query.edit_message_text(f"✅ @{username} tasdiqlandi!")
-    else:
-        await query.edit_message_text("❌ So'rov topilmadi")
-    
-    conn.close()
-
-async def reject_user(query, context, data):
-    user_id = int(data.split('_')[1])
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT username FROM pending_requests WHERE user_id = ?', (user_id,))
-    user = cursor.fetchone()
-    
-    if user:
-        username = user[0]
-        cursor.execute('DELETE FROM pending_requests WHERE user_id = ?', (user_id,))
-        conn.commit()
-        
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="❌ So'rovingiz rad etildi."
+        elif len(parts) >= 3:
+            field = parts[1]
+            product_id = int(parts[2])
+            
+            context.user_data['editing_product'] = product_id
+            context.user_data['editing_field'] = field
+            
+            field_names = {
+                'photo': 'yangi rasm',
+                'name': 'yangi nom',
+                'purchase_usd': 'yangi kelgan narx ($)',
+                'purchase_uzs': 'yangi kelgan narx (so\'m)',
+                'selling_usd': 'yangi sotilish narxi ($)',
+                'selling_uzs': 'yangi sotilish narxi (so\'m)',
+                'quantity': 'yangi soni',
+                'keywords': 'yangi kalit so\'zlar (vergul bilan)',
+                'category': 'yangi kategoriya ID si'
+            }
+            
+            await query.edit_message_text(
+                f"📝 {field_names.get(field, 'yangi ma\'lumot')}ni kiriting:",
+                reply_markup=get_back_button(f"edit_{product_id}")
             )
-        except:
-            pass
+            context.user_data['state'] = EDIT_WAITING
         
-        await query.edit_message_text(f"❌ @{username} rad etildi")
-    else:
-        await query.edit_message_text("❌ So'rov topilmadi")
+        session.close()
+        return
     
-    conn.close()
-
-# Export/Import functions
-async def show_export_import_menu(query):
-    keyboard = [
-        [InlineKeyboardButton("📤 Eksport (JSON)", callback_data="export_data")],
-        [InlineKeyboardButton("📥 Import (JSON)", callback_data="import_data")],
-        [InlineKeyboardButton("🗑 Bazani tozalash", callback_data="clear_data")],
-        [InlineKeyboardButton("⬅️ Orqaga", callback_data="main_menu")]
-    ]
+    # O'chirish
+    if data.startswith("delete_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Sizda o'chirish huquqi yo'q!")
+            session.close()
+            return
+        
+        product_id = int(data.split("_")[1])
+        product = session.query(Product).filter_by(id=product_id).first()
+        
+        if product:
+            session.delete(product)
+            session.commit()
+            await query.edit_message_text("✅ Tovar o'chirildi!")
+        else:
+            await query.edit_message_text("❌ Tovar topilmadi!")
+        
+        session.close()
+        return
     
-    await query.edit_message_text(
-        "📤 **Eksport / Import**\n\n"
-        "Eksport: Barcha ma'lumotlarni JSON fayl sifatida yuklab olish\n"
-        "Import: JSON fayl orqali ma'lumotlarni tiklash (eski ma'lumotlar o'chadi)",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def export_data(query, context):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    # Tovar qo'shish
+    if data == "add_product" or data.startswith("add_product_cat_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Sizda tovar qo'shish huquqi yo'q!")
+            session.close()
+            return
+        
+        if data.startswith("add_product_cat_"):
+            category_id = int(data.split("_")[3])
+            context.user_data['new_product_category'] = category_id
+        
+        context.user_data['new_product'] = {}
+        context.user_data['state'] = ADD_PRODUCT_NAME
+        
+        await query.edit_message_text(
+            "📝 Tovar nomini kiriting:",
+            reply_markup=get_back_button("categories")
+        )
+        session.close()
+        return
     
-    # Export categories
-    cursor.execute('SELECT * FROM categories')
-    categories = cursor.fetchall()
+    # Kategoriya qo'shish
+    if data.startswith("add_cat_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Sizda kategoriya qo'shish huquqi yo'q!")
+            session.close()
+            return
+        
+        parent_id = int(data.split("_")[2])
+        context.user_data['new_category_parent'] = parent_id
+        context.user_data['state'] = ADD_PRODUCT_CATEGORY
+        
+        await query.edit_message_text(
+            "📝 Yangi kategoriya nomini kiriting:",
+            reply_markup=get_back_button("categories")
+        )
+        session.close()
+        return
     
-    # Export products
-    cursor.execute('SELECT * FROM products')
-    products = cursor.fetchall()
+    # Statistika
+    if data == "stats":
+        if not db_user.is_admin and not db_user.can_edit:
+            await query.edit_message_text("❌ Sizda statistika ko'rish huquqi yo'q!")
+            session.close()
+            return
+        
+        products = session.query(Product).all()
+        total_products = len(products)
+        total_quantity = sum(p.quantity for p in products)
+        total_purchase_usd = sum(p.purchase_price_usd * p.quantity for p in products)
+        total_selling_usd = sum(p.selling_price_usd * p.quantity for p in products)
+        potential_profit = total_selling_usd - total_purchase_usd
+        categories = session.query(Category).count()
+        
+        text = (f"📊 STATISTIKA\n\n"
+                f"📦 Jami tovarlar: {total_products}\n"
+                f"📂 Kategoriyalar: {categories}\n"
+                f"🔢 Jami soni: {total_quantity} dona\n\n"
+                f"💰 Kelgan narxi (jami): ${total_purchase_usd:,.0f}\n"
+                f"💵 Sotilish narxi (jami): ${total_selling_usd:,.0f}\n"
+                f"📈 Potensial foyda: ${potential_profit:,.0f}\n\n"
+                f"🕐 Yangilangan: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}")
+        
+        await query.edit_message_text(text, reply_markup=get_back_button())
+        session.close()
+        return
     
-    # Export users
-    cursor.execute('SELECT user_id, username, full_name, added_by, added_date FROM users')
-    users = cursor.fetchall()
+    # Foydalanuvchilar
+    if data == "users":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Sizda foydalanuvchilar ro'yxatini ko'rish huquqi yo'q!")
+            session.close()
+            return
+        
+        users = session.query(User).all()
+        user_list = [{'id': u.id, 'telegram_id': u.telegram_id, 'username': u.username or '-', 
+                      'first_name': u.first_name, 'is_authorized': u.is_authorized, 
+                      'can_edit': u.can_edit} for u in users]
+        
+        await query.edit_message_text(
+            "👥 Foydalanuvchilar:",
+            reply_markup=get_users_keyboard(user_list)
+        )
+        session.close()
+        return
     
-    # Export pending requests
-    cursor.execute('SELECT * FROM pending_requests')
-    pending = cursor.fetchall()
+    # Foydalanuvchi ma'lumotlari
+    if data.startswith("user_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        user_id = int(data.split("_")[1])
+        target_user = session.query(User).filter_by(id=user_id).first()
+        
+        if target_user:
+            status = "✅ Tasdiqlangan" if target_user.is_authorized else "❌ Tasdiqlanmagan"
+            edit_rights = "✏️ Tahrirlash huquqi bor" if target_user.can_edit else "👁 Faqat ko'rish"
+            
+            text = (f"👤 Foydalanuvchi ma'lumotlari:\n\n"
+                    f"🆔 ID: {target_user.telegram_id}\n"
+                    f"📝 Ism: {target_user.first_name}\n"
+                    f"👤 Username: @{target_user.username or 'yoq'}\n"
+                    f"📊 Status: {status}\n"
+                    f"✏️ Huquq: {edit_rights}\n"
+                    f"📅 Qo'shilgan: {target_user.created_at.strftime('%d.%m.%Y')}")
+            
+            await query.edit_message_text(
+                text,
+                reply_markup=get_user_actions_keyboard(target_user.id)
+            )
+        else:
+            await query.edit_message_text("❌ Foydalanuvchi topilmadi!")
+        
+        session.close()
+        return
     
-    conn.close()
+    # Foydalanuvchini tasdiqlash/rad etish
+    if data.startswith("approve_") and not data.startswith("approve_req_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        user_id = int(data.split("_")[1])
+        target_user = session.query(User).filter_by(id=user_id).first()
+        
+        if target_user:
+            target_user.is_authorized = True
+            session.commit()
+            await query.edit_message_text(f"✅ Foydalanuvchi {target_user.first_name} tasdiqlandi!")
+            
+            try:
+                await context.bot.send_message(
+                    target_user.telegram_id,
+                    "✅ Siz tasdiqlandingiz! Endi botdan foydalanishingiz mumkin.\n"
+                    "/start ni bosing."
+                )
+            except:
+                pass
+        else:
+            await query.edit_message_text("❌ Foydalanuvchi topilmadi!")
+        
+        session.close()
+        return
     
-    export_data = {
-        'export_date': format_tashkent_time(),
-        'bot_version': '1.0',
-        'categories': categories,
-        'products': products,
-        'users': users,
-        'pending_requests': pending
-    }
+    if data.startswith("reject_") and not data.startswith("reject_req_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        user_id = int(data.split("_")[1])
+        target_user = session.query(User).filter_by(id=user_id).first()
+        
+        if target_user:
+            target_user.is_authorized = False
+            session.commit()
+            await query.edit_message_text(f"❌ Foydalanuvchi {target_user.first_name} rad etildi!")
+            
+            try:
+                await context.bot.send_message(
+                    target_user.telegram_id,
+                    "❌ Sizning so'rovingiz rad etildi."
+                )
+            except:
+                pass
+        else:
+            await query.edit_message_text("❌ Foydalanuvchi topilmadi!")
+        
+        session.close()
+        return
     
-    # Save to file
-    filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(export_data, f, indent=2, default=str, ensure_ascii=False)
+    # Tahrirlash huquqini o'zgartirish
+    if data.startswith("toggle_edit_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        user_id = int(data.split("_")[2])
+        target_user = session.query(User).filter_by(id=user_id).first()
+        
+        if target_user:
+            target_user.can_edit = not target_user.can_edit
+            session.commit()
+            status = "berildi" if target_user.can_edit else "olib tashlandi"
+            await query.edit_message_text(f"✏️ Tahrirlash huquqi {status}!")
+        else:
+            await query.edit_message_text("❌ Foydalanuvchi topilmadi!")
+        
+        session.close()
+        return
     
-    # Send file
-    await context.bot.send_document(
-        chat_id=query.message.chat_id,
-        document=open(filename, 'rb'),
-        filename=filename,
-        caption=f"📤 Eksport fayli ({format_tashkent_time()})"
-    )
+    # Foydalanuvchini o'chirish
+    if data.startswith("remove_user_"):
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        user_id = int(data.split("_")[2])
+        target_user = session.query(User).filter_by(id=user_id).first()
+        
+        if target_user and target_user.telegram_id != ADMIN_ID:
+            session.delete(target_user)
+            session.commit()
+            await query.edit_message_text("✅ Foydalanuvchi o'chirildi!")
+        else:
+            await query.edit_message_text("❌ Foydalanuvchi topilmadi yoki adminni o'chirib bo'lmaydi!")
+        
+        session.close()
+        return
     
-    # Clean up
-    os.remove(filename)
+    # Ruxsat berish
+    if data == "grant_access":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        context.user_data['state'] = GRANT_ACCESS_WAITING
+        await query.edit_message_text(
+            "👤 Ruxsat bermoqchi bo'lgan foydalanuvchining Telegram ID sini kiriting:",
+            reply_markup=get_back_button()
+        )
+        session.close()
+        return
     
-    await query.edit_message_text("✅ Eksport muvaffaqiyatli yuborildi!")
-
-async def handle_import_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('importing'):
-        return ConversationHandler.END
+    # Eksport/Import
+    if data == "export_import":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        await query.edit_message_text(
+            "📥 Eksport / Import bo'limi:",
+            reply_markup=get_export_import_keyboard()
+        )
+        session.close()
+        return
     
-    document = update.message.document
-    if not document.file_name.endswith('.json'):
-        await update.message.reply_text("❌ Faqat JSON fayl yuboring!")
-        return WAITING_IMPORT_FILE
-    
-    # Download file
-    file = await document.get_file()
-    filename = f"import_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    await file.download_to_drive(filename)
-    
-    # Read and parse JSON
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            import_data = json.load(f)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Faylni o'qishda xatolik: {e}")
+    if data == "export_excel":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        await query.edit_message_text("⏳ Excel fayl tayyorlanmoqda...")
+        
+        filename = await export_to_excel()
+        
+        with open(filename, 'rb') as f:
+            await context.bot.send_document(
+                chat_id=user.id,
+                document=f,
+                filename=f"tovarlar_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                caption="✅ Tovarlar ro'yxati"
+            )
+        
         os.remove(filename)
-        return WAITING_IMPORT_FILE
+        session.close()
+        return
     
-    # Clear existing data
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    if data == "import_excel":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        context.user_data['state'] = IMPORT_WAITING
+        await query.edit_message_text(
+            "📤 Excel faylni yuboring (Eslatma: barcha eski ma'lumotlar o'chib, yangi ma'lumotlar yoziladi):",
+            reply_markup=get_back_button()
+        )
+        session.close()
+        return
     
-    cursor.execute('DELETE FROM products')
-    cursor.execute('DELETE FROM categories')
-    cursor.execute('DELETE FROM users')
-    cursor.execute('DELETE FROM pending_requests')
-    cursor.execute('DELETE FROM price_history')
+    if data == "download_backup":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
+        
+        backup_file = backup_database()
+        
+        with open(backup_file, 'rb') as f:
+            await context.bot.send_document(
+                chat_id=user.id,
+                document=f,
+                filename=f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
+                caption="✅ Ma'lumotlar bazasi backup fayli"
+            )
+        
+        session.close()
+        return
     
-    # Import new data
-    try:
-        if 'categories' in import_data:
-            for cat in import_data['categories']:
-                cursor.execute('''
-                    INSERT INTO categories (id, name, parent_id, created_at)
-                    VALUES (?, ?, ?, ?)
-                ''', cat[:4])
+    if data == "restore_backup":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
         
-        if 'products' in import_data:
-            for prod in import_data['products']:
-                cursor.execute('''
-                    INSERT INTO products (
-                        id, name, category_id, photo_group_id, photo_message_id,
-                        photo_file_id, purchase_price_usd, selling_price_usd, quantity,
-                        created_at, updated_at, created_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', prod[:12])
+        context.user_data['state'] = RESTORE_WAITING
+        await query.edit_message_text(
+            "🔄 Backup faylni yuboring (.db fayl):",
+            reply_markup=get_back_button()
+        )
+        session.close()
+        return
+    
+    if data == "clear_database":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
         
-        if 'users' in import_data:
-            for user in import_data['users']:
-                cursor.execute('''
-                    INSERT INTO users (user_id, username, full_name, added_by, added_date)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', user[:5])
+        buttons = [
+            [InlineKeyboardButton("✅ Ha, tozalash", callback_data="confirm_clear")],
+            [InlineKeyboardButton("❌ Yo'q, bekor qilish", callback_data="main_menu")]
+        ]
+        await query.edit_message_text(
+            "⚠️ DIQQAT! Barcha ma'lumotlar o'chiriladi!\n"
+            "Davom etishni istaysizmi?",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        session.close()
+        return
+    
+    if data == "confirm_clear":
+        if not db_user.is_admin:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
         
-        if 'pending_requests' in import_data:
-            for req in import_data['pending_requests']:
-                cursor.execute('''
-                    INSERT INTO pending_requests (user_id, username, full_name, request_date)
-                    VALUES (?, ?, ?, ?)
-                ''', req[:4])
+        session.query(PriceHistory).delete()
+        session.query(Product).delete()
+        session.query(Category).delete()
+        session.commit()
         
-        conn.commit()
+        await query.edit_message_text(
+            "✅ Barcha ma'lumotlar tozalandi!",
+            reply_markup=get_back_button()
+        )
+        session.close()
+        return
+    
+    if data == "export_only":
+        if not db_user.can_edit:
+            await query.edit_message_text("❌ Ruxsat yo'q!")
+            session.close()
+            return
         
-        context.user_data['importing'] = False
+        filename = await export_to_excel()
+        
+        with open(filename, 'rb') as f:
+            await context.bot.send_document(
+                chat_id=user.id,
+                document=f,
+                filename=f"tovarlar_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                caption="✅ Tovarlar ro'yxati"
+            )
+        
+        os.remove(filename)
+        session.close()
+        return
+    
+    session.close()
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = update.message.text
+    
+    session = Session()
+    db_user = session.query(User).filter_by(telegram_id=user.id).first()
+    
+    if not db_user or (not db_user.is_authorized and not db_user.is_admin):
+        await update.message.reply_text(
+            "❌ Siz botdan foydalana olmaysiz. Avval ruxsat oling.",
+            reply_markup=get_access_request_keyboard()
+        )
+        session.close()
+        return
+    
+    state = context.user_data.get('state')
+    
+    # Qidirish
+    if state == SEARCH:
+        query = text.strip()
+        products = session.query(Product).filter(
+            (Product.name.contains(query)) | 
+            (Product.keywords.contains(query))
+        ).all()
+        
+        if not products:
+            await update.message.reply_text(
+                "❌ Hech narsa topilmadi!",
+                reply_markup=get_back_button()
+            )
+        else:
+            await update.message.reply_text(f"🔍 {len(products)} ta tovar topildi:")
+            
+            for product in products[:10]:
+                text = await get_product_info_text(product)
+                
+                if product.media_channel_message_id:
+                    try:
+                        await context.bot.forward_message(
+                            chat_id=user.id,
+                            from_chat_id=MEDIA_CHANNEL_ID,
+                            message_id=product.media_channel_message_id
+                        )
+                    except:
+                        pass
+                
+                await update.message.reply_text(
+                    text,
+                    reply_markup=get_product_actions_keyboard(product.id, db_user.is_admin),
+                    parse_mode='HTML'
+                )
+            
+            if len(products) > 10:
+                await update.message.reply_text(f"Yana {len(products) - 10} ta tovar bor...")
+        
+        context.user_data['state'] = None
+        session.close()
+        return
+    
+    # Tovar qo'shish - nom
+    if state == ADD_PRODUCT_NAME:
+        context.user_data['new_product']['name'] = text
+        context.user_data['state'] = ADD_PRODUCT_PHOTO
+        await update.message.reply_text(
+            "🖼 Tovar rasmini yuboring (yoki /skip ni bosing):",
+            reply_markup=get_back_button()
+        )
+        session.close()
+        return
+    
+    # Tovar qo'shish - rasm
+    if state == ADD_PRODUCT_PHOTO:
+        if update.message.photo:
+            photo = update.message.photo[-1]
+            
+            sent_message = await context.bot.send_photo(
+                chat_id=MEDIA_CHANNEL_ID,
+                photo=photo.file_id,
+                caption=f"#{context.user_data['new_product']['name'].replace(' ', '_')}"
+            )
+            
+            context.user_data['new_product']['media_message_id'] = sent_message.message_id
+            context.user_data['new_product']['media_file_id'] = photo.file_id
+        
+        context.user_data['state'] = ADD_PRODUCT_PURCHASE_USD
+        await update.message.reply_text(
+            "💰 Kelgan narxini kiriting ($):",
+            reply_markup=get_back_button()
+        )
+        session.close()
+        return
+    
+    # Tovar qo'shish - kelgan narx $
+    if state == ADD_PRODUCT_PURCHASE_USD:
+        try:
+            context.user_data['new_product']['purchase_usd'] = float(text.replace(',', '.'))
+            context.user_data['state'] = ADD_PRODUCT_PURCHASE_UZS
+            await update.message.reply_text(
+                "💰 Kelgan narxini kiriting (so'm, 0 bo'lsa 0 yozing):",
+                reply_markup=get_back_button()
+            )
+        except:
+            await update.message.reply_text("❌ Noto'g'ri format! Qayta kiriting:")
+        session.close()
+        return
+    
+    # Tovar qo'shish - kelgan narx so'm
+    if state == ADD_PRODUCT_PURCHASE_UZS:
+        try:
+            context.user_data['new_product']['purchase_uzs'] = float(text.replace(',', '.'))
+            context.user_data['state'] = ADD_PRODUCT_SELLING_USD
+            await update.message.reply_text(
+                "💵 Sotilish narxini kiriting ($):",
+                reply_markup=get_back_button()
+            )
+        except:
+            await update.message.reply_text("❌ Noto'g'ri format! Qayta kiriting:")
+        session.close()
+        return
+    
+    # Tovar qo'shish - sotilish narx $
+    if state == ADD_PRODUCT_SELLING_USD:
+        try:
+            context.user_data['new_product']['selling_usd'] = float(text.replace(',', '.'))
+            context.user_data['state'] = ADD_PRODUCT_SELLING_UZS
+            await update.message.reply_text(
+                "💵 Sotilish narxini kiriting (so'm, 0 bo'lsa 0 yozing):",
+                reply_markup=get_back_button()
+            )
+        except:
+            await update.message.reply_text("❌ Noto'g'ri format! Qayta kiriting:")
+        session.close()
+        return
+    
+    # Tovar qo'shish - sotilish narx so'm
+    if state == ADD_PRODUCT_SELLING_UZS:
+        try:
+            context.user_data['new_product']['selling_uzs'] = float(text.replace(',', '.'))
+            context.user_data['state'] = ADD_PRODUCT_QUANTITY
+            await update.message.reply_text(
+                "📦 Soni (dona):",
+                reply_markup=get_back_button()
+            )
+        except:
+            await update.message.reply_text("❌ Noto'g'ri format! Qayta kiriting:")
+        session.close()
+        return
+    
+    # Tovar qo'shish - soni
+    if state == ADD_PRODUCT_QUANTITY:
+        try:
+            context.user_data['new_product']['quantity'] = int(text)
+            context.user_data['state'] = ADD_PRODUCT_KEYWORDS
+            await update.message.reply_text(
+                "🔑 Kalit so'zlar (vergul bilan ajrating):",
+                reply_markup=get_back_button()
+            )
+        except:
+            await update.message.reply_text("❌ Noto'g'ri format! Qayta kiriting:")
+        session.close()
+        return
+    
+    # Tovar qo'shish - kalit so'zlar
+    if state == ADD_PRODUCT_KEYWORDS:
+        context.user_data['new_product']['keywords'] = text
+        
+        categories = session.query(Category).all()
+        if categories:
+            buttons = []
+            for cat in categories:
+                buttons.append([InlineKeyboardButton(cat.name, callback_data=f"select_cat_{cat.id}")])
+            buttons.append([InlineKeyboardButton("➕ Yangi kategoriya", callback_data="add_new_category")])
+            buttons.append([InlineKeyboardButton("🔙 Bekor qilish", callback_data="main_menu")])
+            
+            await update.message.reply_text(
+                "📂 Kategoriyani tanlang:",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            context.user_data['state'] = None
+        else:
+            context.user_data['state'] = ADD_PRODUCT_CATEGORY
+            await update.message.reply_text(
+                "📂 Yangi kategoriya nomini kiriting:",
+                reply_markup=get_back_button()
+            )
+        session.close()
+        return
+    
+    # Kategoriya qo'shish
+    if state == ADD_PRODUCT_CATEGORY:
+        category_name = text
+        parent_id = context.user_data.get('new_category_parent')
+        
+        category = Category(name=category_name, parent_id=parent_id)
+        session.add(category)
+        session.flush()
+        
+        if 'new_product' in context.user_data:
+            context.user_data['new_product']['category_id'] = category.id
+            
+            product = Product(
+                name=context.user_data['new_product']['name'],
+                category_id=category.id,
+                purchase_price_usd=context.user_data['new_product']['purchase_usd'],
+                purchase_price_uzs=context.user_data['new_product']['purchase_uzs'],
+                selling_price_usd=context.user_data['new_product']['selling_usd'],
+                selling_price_uzs=context.user_data['new_product']['selling_uzs'],
+                quantity=context.user_data['new_product']['quantity'],
+                keywords=context.user_data['new_product'].get('keywords', ''),
+                media_channel_message_id=context.user_data['new_product'].get('media_message_id')
+            )
+            session.add(product)
+            session.commit()
+            
+            await update.message.reply_text(
+                "✅ Tovar muvaffaqiyatli qo'shildi!",
+                reply_markup=get_back_button()
+            )
+            
+            del context.user_data['new_product']
+            if 'new_category_parent' in context.user_data:
+                del context.user_data['new_category_parent']
+        else:
+            session.commit()
+            await update.message.reply_text(
+                f"✅ Kategoriya qo'shildi: {category_name}",
+                reply_markup=get_back_button("categories")
+            )
+            if 'new_category_parent' in context.user_data:
+                del context.user_data['new_category_parent']
+        
+        context.user_data['state'] = None
+        session.close()
+        return
+    
+    # Tahrirlash
+    if state == EDIT_WAITING:
+        product_id = context.user_data.get('editing_product')
+        field = context.user_data.get('editing_field')
+        
+        product = session.query(Product).filter_by(id=product_id).first()
+        if not product:
+            await update.message.reply_text("❌ Tovar topilmadi!")
+            context.user_data['state'] = None
+            session.close()
+            return
+        
+        old_data = {
+            'purchase_usd': product.purchase_price_usd,
+            'purchase_uzs': product.purchase_price_uzs,
+            'selling_usd': product.selling_price_usd,
+            'selling_uzs': product.selling_price_uzs,
+            'quantity': product.quantity
+        }
+        
+        if field == 'name':
+            product.name = text
+        elif field == 'purchase_usd':
+            try:
+                product.purchase_price_usd = float(text.replace(',', '.'))
+            except:
+                await update.message.reply_text("❌ Noto'g'ri format!")
+                session.close()
+                return
+        elif field == 'purchase_uzs':
+            try:
+                product.purchase_price_uzs = float(text.replace(',', '.'))
+            except:
+                await update.message.reply_text("❌ Noto'g'ri format!")
+                session.close()
+                return
+        elif field == 'selling_usd':
+            try:
+                product.selling_price_usd = float(text.replace(',', '.'))
+            except:
+                await update.message.reply_text("❌ Noto'g'ri format!")
+                session.close()
+                return
+        elif field == 'selling_uzs':
+            try:
+                product.selling_price_uzs = float(text.replace(',', '.'))
+            except:
+                await update.message.reply_text("❌ Noto'g'ri format!")
+                session.close()
+                return
+        elif field == 'quantity':
+            try:
+                product.quantity = int(text)
+            except:
+                await update.message.reply_text("❌ Noto'g'ri format!")
+                session.close()
+                return
+        elif field == 'keywords':
+            product.keywords = text
+        
+        if field in ['purchase_usd', 'purchase_uzs', 'selling_usd', 'selling_uzs', 'quantity']:
+            history = PriceHistory(
+                product_id=product.id,
+                old_purchase_usd=old_data['purchase_usd'],
+                old_purchase_uzs=old_data['purchase_uzs'],
+                old_selling_usd=old_data['selling_usd'],
+                old_selling_uzs=old_data['selling_uzs'],
+                old_quantity=old_data['quantity'],
+                new_purchase_usd=product.purchase_price_usd,
+                new_purchase_uzs=product.purchase_price_uzs,
+                new_selling_usd=product.selling_price_usd,
+                new_selling_uzs=product.selling_price_uzs,
+                new_quantity=product.quantity,
+                changed_by=user.id
+            )
+            session.add(history)
+        
+        session.commit()
         
         await update.message.reply_text(
-            f"✅ Import muvaffaqiyatli yakunlandi!\n"
-            f"📦 {len(import_data.get('products', []))} ta tovar\n"
-            f"📂 {len(import_data.get('categories', []))} ta kategoriya\n"
-            f"👥 {len(import_data.get('users', []))} ta foydalanuvchi\n"
-            f"🕐 {format_tashkent_time()}"
+            "✅ Ma'lumot yangilandi!",
+            reply_markup=get_back_button(f"view_{product_id}")
         )
         
-        if is_admin(update.effective_user.id):
-            await show_admin_menu(update, context, format_tashkent_time())
+        context.user_data['state'] = None
+        session.close()
+        return
+    
+    # Import
+    if state == IMPORT_WAITING:
+        if update.message.document:
+            file = await update.message.document.get_file()
+            filename = f"data/import_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            await file.download_to_drive(filename)
+            
+            await update.message.reply_text("⏳ Import qilinmoqda...")
+            
+            success, message = await import_from_excel(filename, clear_existing=True)
+            
+            if success:
+                await update.message.reply_text(
+                    f"✅ {message}",
+                    reply_markup=get_back_button()
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ {message}",
+                    reply_markup=get_back_button()
+                )
+            
+            os.remove(filename)
+        else:
+            await update.message.reply_text("❌ Iltimos, Excel fayl yuboring!")
         
-    except Exception as e:
-        conn.rollback()
-        await update.message.reply_text(f"❌ Importda xatolik: {e}")
-        logger.error(f"Import error: {e}")
-    finally:
-        conn.close()
-        os.remove(filename)
+        context.user_data['state'] = None
+        session.close()
+        return
     
-    return ConversationHandler.END
+    # Backup tiklash
+    if state == RESTORE_WAITING:
+        if update.message.document:
+            file = await update.message.document.get_file()
+            filename = f"data/restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            await file.download_to_drive(filename)
+            
+            try:
+                restore_database(filename)
+                await update.message.reply_text(
+                    "✅ Backup tiklandi! Botni qayta ishga tushiring.",
+                    reply_markup=get_back_button()
+                )
+            except Exception as e:
+                await update.message.reply_text(
+                    f"❌ Xatolik: {str(e)}",
+                    reply_markup=get_back_button()
+                )
+            
+            os.remove(filename)
+        else:
+            await update.message.reply_text("❌ Iltimos, .db fayl yuboring!")
+        
+        context.user_data['state'] = None
+        session.close()
+        return
+    
+    # Ruxsat berish
+    if state == GRANT_ACCESS_WAITING:
+        try:
+            target_id = int(text.strip())
+            target_user = session.query(User).filter_by(telegram_id=target_id).first()
+            
+            if target_user:
+                target_user.is_authorized = True
+                session.commit()
+                await update.message.reply_text(
+                    f"✅ Foydalanuvchi {target_user.first_name} ga ruxsat berildi!",
+                    reply_markup=get_back_button()
+                )
+                
+                try:
+                    await context.bot.send_message(
+                        target_id,
+                        "✅ Sizga botdan foydalanish uchun ruxsat berildi!\n"
+                        "/start ni bosing."
+                    )
+                except:
+                    pass
+            else:
+                await update.message.reply_text(
+                    "❌ Bunday ID li foydalanuvchi topilmadi!",
+                    reply_markup=get_back_button()
+                )
+        except:
+            await update.message.reply_text(
+                "❌ Noto'g'ri format! ID raqam kiriting.",
+                reply_markup=get_back_button()
+            )
+        
+        context.user_data['state'] = None
+        session.close()
+        return
+    
+    session.close()
 
-# Clear data functions
-async def show_clear_menu(query):
-    keyboard = [
-        [InlineKeyboardButton("🗑 Hammasini tozalash", callback_data="clear_all")],
-        [InlineKeyboardButton("📦 Faqat tovarlarni tozalash", callback_data="clear_products")],
-        [InlineKeyboardButton("👥 Faqat foydalanuvchilarni tozalash", callback_data="clear_users")],
-        [InlineKeyboardButton("⬅️ Orqaga", callback_data="export_import")]
-    ]
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get('state')
     
-    await query.edit_message_text(
-        "⚠️ **Ogohlantirish!** Bu amalni ortga qaytarib bo'lmaydi!\n\n"
-        "Qaysi ma'lumotlarni tozalashni tanlang:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
+    if state == ADD_PRODUCT_PHOTO:
+        photo = update.message.photo[-1]
+        
+        sent_message = await context.bot.send_photo(
+            chat_id=MEDIA_CHANNEL_ID,
+            photo=photo.file_id,
+            caption=f"#{context.user_data['new_product']['name'].replace(' ', '_')}"
+        )
+        
+        context.user_data['new_product']['media_message_id'] = sent_message.message_id
+        context.user_data['new_product']['media_file_id'] = photo.file_id
+        
+        context.user_data['state'] = ADD_PRODUCT_PURCHASE_USD
+        await update.message.reply_text(
+            "💰 Kelgan narxini kiriting ($):",
+            reply_markup=get_back_button()
+        )
+    elif state == EDIT_WAITING:
+        field = context.user_data.get('editing_field')
+        if field == 'photo':
+            product_id = context.user_data.get('editing_product')
+            session = Session()
+            product = session.query(Product).filter_by(id=product_id).first()
+            
+            if product:
+                photo = update.message.photo[-1]
+                sent_message = await context.bot.send_photo(
+                    chat_id=MEDIA_CHANNEL_ID,
+                    photo=photo.file_id,
+                    caption=f"#{product.name.replace(' ', '_')}"
+                )
+                
+                product.media_channel_message_id = sent_message.message_id
+                session.commit()
+                
+                await update.message.reply_text(
+                    "✅ Rasm yangilandi!",
+                    reply_markup=get_back_button(f"view_{product_id}")
+                )
+            
+            session.close()
+            context.user_data['state'] = None
 
-async def clear_all_data(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('DELETE FROM products')
-    cursor.execute('DELETE FROM categories')
-    cursor.execute('DELETE FROM users')
-    cursor.execute('DELETE FROM pending_requests')
-    cursor.execute('DELETE FROM price_history')
-    
-    conn.commit()
-    conn.close()
-    
-    await query.edit_message_text(f"✅ Barcha ma'lumotlar tozalandi! ({format_tashkent_time()})")
-
-async def clear_products_data(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('DELETE FROM products')
-    cursor.execute('DELETE FROM price_history')
-    
-    conn.commit()
-    conn.close()
-    
-    await query.edit_message_text(f"✅ Barcha tovarlar tozalandi! ({format_tashkent_time()})")
-
-async def clear_users_data(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('DELETE FROM users')
-    cursor.execute('DELETE FROM pending_requests')
-    
-    conn.commit()
-    conn.close()
-    
-    await query.edit_message_text(f"✅ Barcha foydalanuvchilar tozalandi! ({format_tashkent_time()})")
-
-# Cancel
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("❌ Bekor qilindi")
-    
-    if is_admin(update.effective_user.id):
-        await show_admin_menu(update, context, format_tashkent_time())
-    else:
-        await show_user_menu(update, context, format_tashkent_time())
-    
-    return ConversationHandler.END
-
-# Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Xatolik: {context.error}")
+    
     try:
-        error_msg = str(context.error)[:200]
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"❌ Xatolik yuz berdi ({format_tashkent_time()}):\n{error_msg}"
-        )
+        if update and update.effective_chat:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                "❌ Xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring."
+            )
     except:
         pass
 
-# Main function
+# ==================== ASOSIY FUNKSIYA ====================
+
 def main():
-    # Initialize database
-    init_database()
+    print("""
+    ╔════════════════════════════════════╗
+    ║     DO'KON BOSHQARUVI BOTI         ║
+    ║         @maestro_o                  ║
+    ╚════════════════════════════════════╝
+    """)
     
-    # Create application
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Muhitni tekshirish
+    logger.info("🔍 Muhit tekshirilmoqda...")
     
-    # Category conversation
-    category_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^add_category$|^add_subcat_")],
-        states={
-            WAITING_CATEGORY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category_name)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    errors = []
     
-    # Product conversation (add)
-    product_add_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(button_callback, pattern="^add_product_start$"),
-            CallbackQueryHandler(button_callback, pattern="^add_product_")
-        ],
-        states={
-            WAITING_PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_product_name)],
-            WAITING_PRODUCT_PHOTO: [
-                MessageHandler(filters.PHOTO, handle_product_photo),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_product_photo)
-            ],
-            WAITING_PURCHASE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_purchase_price)],
-            WAITING_SELLING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selling_price)],
-            WAITING_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quantity)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    if not BOT_TOKEN or BOT_TOKEN == "7847347173:AAF_cQ8p6UZbCQk5FqWXg9nIf0Q2jzzU-yY":
+        errors.append("❌ BOT_TOKEN noto'g'ri yoki kiritilmagan!")
     
-    # Edit conversations
-    edit_name_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^edit_name_")],
-        states={
-            WAITING_EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_name)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    if not ADMIN_ID or ADMIN_ID == 0:
+        errors.append("❌ ADMIN_ID noto'g'ri yoki kiritilmagan!")
     
-    edit_purchase_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^edit_purchase_")],
-        states={
-            WAITING_EDIT_PURCHASE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_purchase)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    if not MEDIA_CHANNEL_ID or MEDIA_CHANNEL_ID == 0:
+        errors.append("❌ MEDIA_CHANNEL_ID noto'g'ri yoki kiritilmagan!")
     
-    edit_selling_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^edit_selling_")],
-        states={
-            WAITING_EDIT_SELLING: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_selling)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    if not os.path.exists('data'):
+        try:
+            os.makedirs('data')
+            logger.info("📁 'data' papkasi yaratildi")
+        except:
+            errors.append("❌ 'data' papkasini yaratib bo'lmadi!")
     
-    edit_quantity_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^edit_quantity_")],
-        states={
-            WAITING_EDIT_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_quantity)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    if errors:
+        logger.error("❌ Muhit tekshiruvida xatoliklar topildi:")
+        for error in errors:
+            logger.error(error)
+        
+        print("\n" + "="*50)
+        print("❌ XATOLIK! Bot ishga tushirilmadi!")
+        print("Sabablari:")
+        for error in errors:
+            print(f"  • {error}")
+        print("\n💡 Yechim:")
+        print("  1. .env faylini tekshiring")
+        print("  2. Barcha kerakli o'zgaruvchilarni kiriting")
+        print("  3. Qaytadan urinib ko'ring")
+        print("="*50)
+        
+        sys.exit(1)
     
-    edit_photo_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^edit_photo_")],
-        states={
-            WAITING_PRODUCT_PHOTO: [
-                MessageHandler(filters.PHOTO, handle_product_photo),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_product_photo)
-            ]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    logger.info("✅ Muhit tekshiruvi muvaffaqiyatli o'tdi")
     
-    # Search conversation
-    search_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^search$")],
-        states={
-            WAITING_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    # Ma'lumotlar bazasini ishga tushirish
+    logger.info("🗄 Ma'lumotlar bazasi ishga tushirilmoqda...")
+    try:
+        init_db()
+        logger.info("✅ Ma'lumotlar bazasi tayyor")
+    except Exception as e:
+        logger.error(f"❌ Ma'lumotlar bazasi xatoligi: {e}")
+        sys.exit(1)
     
-    # Add user conversation
-    add_user_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^add_user$")],
-        states={
-            WAITING_USER_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_id)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    # Botni yaratish
+    logger.info("🤖 Bot yaratilmoqda...")
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        logger.info("✅ Bot yaratildi")
+    except Exception as e:
+        logger.error(f"❌ Bot yaratishda xatolik: {e}")
+        sys.exit(1)
     
-    # Import conversation
-    import_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_callback, pattern="^import_data$")],
-        states={
-            WAITING_IMPORT_FILE: [MessageHandler(filters.Document.FileExtension("json"), handle_import_file)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+    # Handlerlarni o'rnatish
+    logger.info("🔧 Handlerlar o'rnatilmoqda...")
     
-    # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(category_conv)
-    app.add_handler(product_add_conv)
-    app.add_handler(edit_name_conv)
-    app.add_handler(edit_purchase_conv)
-    app.add_handler(edit_selling_conv)
-    app.add_handler(edit_quantity_conv)
-    app.add_handler(edit_photo_conv)
-    app.add_handler(search_conv)
-    app.add_handler(add_user_conv)
-    app.add_handler(import_conv)
-    app.add_error_handler(error_handler)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    application.add_error_handler(error_handler)
     
-    print("🤖 Bot ishga tushdi...")
-    print(f"👤 Admin ID: {ADMIN_ID}")
-    print(f"🕐 Toshkent vaqti: {format_tashkent_time()}")
-    app.run_polling()
+    logger.info("✅ Handlerlar o'rnatildi")
+    
+    # Botni ishga tushirish
+    print("\n" + "="*50)
+    print("🚀 BOT ISHGA TUSHIRILMOQDA...")
+    print("="*50)
+    print(f"🕐 Vaqt: {datetime.now().strftime('%H:%M:%S')}")
+    print(f"📅 Sana: {datetime.now().strftime('%d.%m.%Y')}")
+    print("="*50 + "\n")
+    
+    logger.info("🎉 Bot muvaffaqiyatli ishga tushdi!")
+    logger.info("📡 Polling boshlanmoqda...")
+    
+    try:
+        application.run_polling(allowed_updates=['message', 'callback_query'], drop_pending_updates=True)
+    except KeyboardInterrupt:
+        logger.info("👋 Bot to'xtatildi (Ctrl+C)")
+    except Exception as e:
+        logger.error(f"❌ Bot ishga tushishda xatolik: {e}")
+        sys.exit(1)
+    finally:
+        logger.info("👋 Bot ishdan to'xtadi")
+        print("\n" + "="*50)
+        print("👋 BOT TO'XTATILDI")
+        print("="*50)
 
 if __name__ == '__main__':
     main()
