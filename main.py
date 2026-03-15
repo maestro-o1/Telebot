@@ -4,13 +4,14 @@
 """
 Do'kon boshqaruvi uchun Telegram bot
 Muallif: @maestro_o
-Versiya: 4.1 - Muammolar tuzatilgan
+Versiya: 4.2 - Tuzatilgan (vaqt mintaqasi, kategoriyalar, rasm ID, ruxsat so'rovi, filial atamasi)
 """
 
 import logging
 import os
 import sys
 from datetime import datetime
+import pytz
 import pandas as pd
 import shutil
 from typing import Dict, List, Optional
@@ -34,6 +35,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Vaqt mintaqasi
+TASHKENT_TZ = pytz.timezone('Asia/Tashkent')
+
 # ==================== KONFIGURATSIYA ====================
 from dotenv import load_dotenv
 load_dotenv()
@@ -43,7 +47,7 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 
 # ==================== MA'LUMOTLAR BAZASI ====================
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text
-from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
+from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session, relationship
 
 # Ma'lumotlar bazasini yaratish
 os.makedirs('data', exist_ok=True)
@@ -64,21 +68,22 @@ class User(Base):
     branch_type = Column(String, default='main')  # 'main', 'parasite'
     branch_name = Column(String, nullable=True)   # 'chiroqchi', 'shahrisabz'
     parent_id = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=lambda: datetime.now(TASHKENT_TZ))
 
 class AccessRequest(Base):
     __tablename__ = 'access_requests'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
     status = Column(String, default='pending')
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=lambda: datetime.now(TASHKENT_TZ))
+    user = relationship('User')
 
 class Category(Base):
     __tablename__ = 'categories'
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True)
     parent_id = Column(Integer, ForeignKey('categories.id'), nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=lambda: datetime.now(TASHKENT_TZ))
 
 class Product(Base):
     __tablename__ = 'products'
@@ -87,7 +92,7 @@ class Product(Base):
     description = Column(Text, nullable=True)
     category_id = Column(Integer, ForeignKey('categories.id'), nullable=True)
     
-    # Qaysi qatlamga tegishli
+    # Qaysi filialga tegishli
     owner_type = Column(String, default='main')  # 'main', 'parasite'
     owner_id = Column(Integer, nullable=True)
     
@@ -102,8 +107,8 @@ class Product(Base):
     media_file_id = Column(String, nullable=True)
     keywords = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=lambda: datetime.now(TASHKENT_TZ))
+    updated_at = Column(DateTime, default=lambda: datetime.now(TASHKENT_TZ), onupdate=lambda: datetime.now(TASHKENT_TZ))
 
 class PriceHistory(Base):
     __tablename__ = 'price_history'
@@ -119,7 +124,7 @@ class PriceHistory(Base):
     new_selling_usd = Column(Float)
     new_selling_uzs = Column(Float)
     new_quantity = Column(Integer)
-    changed_at = Column(DateTime, default=datetime.now)
+    changed_at = Column(DateTime, default=lambda: datetime.now(TASHKENT_TZ))
     changed_by = Column(Integer)
 
 class BotGroup(Base):
@@ -128,7 +133,7 @@ class BotGroup(Base):
     group_id = Column(Integer, unique=True)
     group_name = Column(String)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=lambda: datetime.now(TASHKENT_TZ))
 
 # ==================== BAZA FUNKSIYALARI ====================
 
@@ -155,13 +160,8 @@ def init_db():
             session.commit()
             logger.info(f"✅ Admin qo'shildi: {ADMIN_ID}")
         
-        # Kategoriyalarni yaratish (faqat mavjud bo'lmasa)
-        categories = ['Elektronika', 'Avto qismlar', 'Maishiy texnika', 'Qurilish', 'Boshqa']
-        for cat_name in categories:
-            cat = session.query(Category).filter_by(name=cat_name).first()
-            if not cat:
-                cat = Category(name=cat_name)
-                session.add(cat)
+        # Kategoriyalarni yaratish (endi default yo'q)
+        # Faqat admin qo'shgan kategoriyalar bo'ladi
         
         session.commit()
         session.close()
@@ -172,7 +172,7 @@ def init_db():
 
 def backup_database():
     """Ma'lumotlar bazasini backup qilish"""
-    backup_name = f"data/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    backup_name = f"data/backup_{datetime.now(TASHKENT_TZ).strftime('%Y%m%d_%H%M%S')}.db"
     shutil.copy2('data/shop_bot.db', backup_name)
     return backup_name
 
@@ -192,7 +192,7 @@ def get_main_keyboard(user_is_admin=False, user_branch_type=None, user_branch_na
     
     if user_is_admin:
         buttons.extend([
-            [InlineKeyboardButton("📊 Qatlamlar (Layers)", callback_data="layers")],
+            [InlineKeyboardButton("📊 Filiallar", callback_data="layers")],
             [InlineKeyboardButton("📊 Statistika", callback_data="stats")],
             [InlineKeyboardButton("➕ Tovar qo'shish", callback_data="add_product")],
             [InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="users")],
@@ -249,11 +249,11 @@ def get_cancel_button():
     ])
 
 def get_layers_keyboard():
-    """Qatlamlar menyusi"""
+    """Filiallar menyusi"""
     buttons = [
-        [InlineKeyboardButton("👑 Asosiy qatlam", callback_data="layer_main")],
-        [InlineKeyboardButton("🐝 Chiroqchi qatlami", callback_data="layer_chiroqchi")],
-        [InlineKeyboardButton("🔙 Bosh menyu", callback_data="main_menu")]
+        [InlineKeyboardButton("👑 Asosiy filial", callback_data="layer_main")],
+        [InlineKeyboardButton("🐝 Chiroqchi filiali", callback_data="layer_chiroqchi")],
+        [InlineKeyboardButton("🏠 Bosh menyu", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(buttons)
 
@@ -347,7 +347,7 @@ def get_export_import_keyboard():
         [InlineKeyboardButton("💾 Backup yuklab olish", callback_data="download_backup")],
         [InlineKeyboardButton("🔄 Backupdan tiklash", callback_data="restore_backup")],
         [InlineKeyboardButton("🗑 Bazani tozalash", callback_data="clear_database")],
-        [InlineKeyboardButton("🔙 Bosh menyu", callback_data="main_menu")]
+        [InlineKeyboardButton("🏠 Bosh menyu", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(buttons)
 
@@ -366,7 +366,7 @@ def get_users_keyboard(users):
             )
         ])
     
-    buttons.append([InlineKeyboardButton("🔙 Bosh menyu", callback_data="main_menu")])
+    buttons.append([InlineKeyboardButton("🏠 Bosh menyu", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
 
 def get_user_actions_keyboard(user_id):
@@ -374,7 +374,7 @@ def get_user_actions_keyboard(user_id):
     buttons = [
         [InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_{user_id}")],
         [InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_{user_id}")],
-        [InlineKeyboardButton("🔄 Qatlamni o'zgartirish", callback_data=f"change_branch_{user_id}")],
+        [InlineKeyboardButton("🔄 Filialni o'zgartirish", callback_data=f"change_branch_{user_id}")],
         [InlineKeyboardButton("🗑 O'chirish", callback_data=f"remove_user_{user_id}")],
         [InlineKeyboardButton("🔙 Orqaga", callback_data="users")],
         [InlineKeyboardButton("🏠 Bosh menyu", callback_data="main_menu")]
@@ -382,11 +382,11 @@ def get_user_actions_keyboard(user_id):
     return InlineKeyboardMarkup(buttons)
 
 def get_branch_keyboard(user_id):
-    """Qatlam tanlash"""
+    """Filial tanlash"""
     buttons = [
-        [InlineKeyboardButton("👑 Asosiy (Admin)", callback_data=f"set_branch_main_{user_id}")],
-        [InlineKeyboardButton("🐝 Chiroqchi", callback_data=f"set_branch_chiroqchi_{user_id}")],
-        [InlineKeyboardButton("🏛 Shahrisabz", callback_data=f"set_branch_shahrisabz_{user_id}")],
+        [InlineKeyboardButton("👑 Asosiy filial (Admin)", callback_data=f"set_branch_main_{user_id}")],
+        [InlineKeyboardButton("🐝 Chiroqchi filiali", callback_data=f"set_branch_chiroqchi_{user_id}")],
+        [InlineKeyboardButton("🏛 Shahrisabz filiali", callback_data=f"set_branch_shahrisabz_{user_id}")],
         [InlineKeyboardButton("🔙 Orqaga", callback_data=f"user_{user_id}")],
         [InlineKeyboardButton("🏠 Bosh menyu", callback_data="main_menu")]
     ]
@@ -430,7 +430,7 @@ async def export_to_excel():
             'ID': p.id,
             'Nomi': p.name or '',
             'Kategoriya': category.name if category else '',
-            'Qatlam': 'Asosiy' if p.owner_type == 'main' else owner_name,
+            'Filial': 'Asosiy' if p.owner_type == 'main' else owner_name,
             'Kelgan narxi ($)': p.purchase_price_usd or 0,
             'Kelgan narxi (so\'m)': p.purchase_price_uzs or 0,
             'Sotilish narxi ($)': p.selling_price_usd or 0,
@@ -447,7 +447,7 @@ async def export_to_excel():
         })
     
     df = pd.DataFrame(data)
-    filename = f"data/export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"data/export_{datetime.now(TASHKENT_TZ).strftime('%Y%m%d_%H%M%S')}.xlsx"
     df.to_excel(filename, index=False)
     
     session.close()
@@ -483,12 +483,12 @@ async def import_from_excel(file_path, clear_existing=True):
                     categories_cache[category_name] = category.id
                 category_id = categories_cache.get(category_name)
             
-            # Qatlamni aniqlash
+            # Filialni aniqlash
             owner_type = 'main'
             owner_id = None
-            qatlam = str(row.get('Qatlam', 'Asosiy'))
-            if qatlam != 'Asosiy':
-                owner = session.query(User).filter_by(branch_name=qatlam).first()
+            filial = str(row.get('Filial', 'Asosiy'))
+            if filial != 'Asosiy':
+                owner = session.query(User).filter_by(branch_name=filial).first()
                 if owner:
                     owner_type = 'parasite'
                     owner_id = owner.id
@@ -526,7 +526,7 @@ async def get_product_info_text(product, owner_name="Asosiy"):
     text += f"🆔 <b>ID:</b> {product.id}\n\n"
     
     text += f"👤 <b>Egasi:</b> {owner_name}\n"
-    text += f"📊 <b>Qatlam:</b> {'Asosiy' if product.owner_type == 'main' else 'Chiroqchi'}\n\n"
+    text += f"📊 <b>Filial:</b> {'Asosiy' if product.owner_type == 'main' else 'Chiroqchi'}\n\n"
     
     if product.description:
         text += f"📝 {product.description}\n\n"
@@ -566,6 +566,106 @@ async def get_product_info_text(product, owner_name="Asosiy"):
     text += f"\n📅 <b>Qo'shilgan:</b> {product.created_at.strftime('%d.%m.%Y %H:%M')}"
     
     return text
+
+# ==================== ASOSIY MENYU FUNKSIYASI ====================
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id=None):
+    """Asosiy menyuni ko'rsatish"""
+    if user_id is None:
+        if update.effective_user:
+            user_id = update.effective_user.id
+        else:
+            return
+    
+    session = db_session()
+    try:
+        db_user = session.query(User).filter_by(telegram_id=user_id).first()
+        if not db_user:
+            return
+        
+        if db_user.is_admin:
+            # Asosiy filial statistikasi
+            main_products = session.query(Product).filter_by(owner_type='main', is_active=True).count()
+            chiroqchi_products = session.query(Product).filter_by(owner_type='parasite', is_active=True).count()
+            
+            # Chiroqchi foydalanuvchilar
+            chiroqchi_users = session.query(User).filter_by(branch_type='parasite', is_authorized=True).all()
+            
+            text = (f"👋 Xush kelibsiz Admin!\n\n"
+                    f"📊 <b>FILIALLAR STATISTIKASI</b>\n"
+                    f"👑 Asosiy filial: {main_products} ta tovar\n")
+            
+            if chiroqchi_users:
+                for cu in chiroqchi_users:
+                    user_products = session.query(Product).filter_by(
+                        owner_type='parasite', 
+                        owner_id=cu.id,
+                        is_active=True
+                    ).count()
+                    text += f"🐝 {cu.branch_name} filiali: {user_products} ta tovar\n"
+            else:
+                text += f"🐝 Chiroqchi filiali: {chiroqchi_products} ta tovar\n"
+            
+            text += f"\n📌 <b>Filiallar haqida:</b>\n"
+            text += f"• Asosiy filial - siz va Shahrisabz ko'rasiz\n"
+            text += f"• Chiroqchi filiali - faqat Chiroqchi o'zi ko'radi\n\n"
+            text += f"Kerakli bo'limni tanlang:"
+            
+            reply_markup = get_main_keyboard(user_is_admin=True)
+            
+        elif db_user.branch_type == 'parasite':
+            # Parazit (Chiroqchi) uchun
+            my_products = session.query(Product).filter_by(
+                owner_type='parasite', 
+                owner_id=db_user.id,
+                is_active=True
+            ).count()
+            
+            main_products = session.query(Product).filter_by(
+                owner_type='main',
+                is_active=True
+            ).count()
+            
+            text = (f"👋 Xush kelibsiz {db_user.branch_name}!\n\n"
+                    f"📊 <b>SIZNING STATISTIKANGIZ</b>\n"
+                    f"🐝 Sizning tovarlaringiz: {my_products} ta\n"
+                    f"👑 Asosiy tovarlar: {main_products} ta\n\n"
+                    f"📌 <b>Ma'lumot:</b>\n"
+                    f"• Asosiy tovarlar - Admin qo'shgan, hamma ko'radi\n"
+                    f"• Sizning tovarlaringiz - faqat siz ko'rasiz\n\n"
+                    f"Kerakli bo'limni tanlang:")
+            
+            reply_markup = get_main_keyboard(
+                user_is_admin=False, 
+                user_branch_type='parasite',
+                user_branch_name=db_user.branch_name
+            )
+            
+        elif db_user.is_authorized:
+            # Shahrisabz yoki boshqa foydalanuvchilar
+            text = (f"👋 Xush kelibsiz {db_user.first_name}!\n\n"
+                    f"Kerakli bo'limni tanlang:")
+            reply_markup = get_main_keyboard(user_is_admin=False)
+        else:
+            text = (f"👋 Xush kelibsiz {db_user.first_name}!\n\n"
+                    f"❌ Botdan foydalanish uchun ruxsat kerak.\n"
+                    f"ID raqamingiz: <code>{db_user.telegram_id}</code>\n\n"
+                    f"Ruxsat so'rash uchun pastdagi tugmani bosing.")
+            reply_markup = get_access_request_keyboard()
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+            
+    except Exception as e:
+        logger.error(f"Show main menu xatolik: {e}")
+        if update.callback_query:
+            await update.callback_query.edit_message_text("❌ Xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.")
+        else:
+            await update.message.reply_text("❌ Xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.")
+    finally:
+        session.close()
 
 # ==================== HANDLERS ====================
 
@@ -620,94 +720,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Shaxsiy chat
-        if db_user.is_admin:
-            # Asosiy qatlam statistikasi
-            main_products = session.query(Product).filter_by(owner_type='main', is_active=True).count()
-            chiroqchi_products = session.query(Product).filter_by(owner_type='parasite', is_active=True).count()
-            
-            # Chiroqchi foydalanuvchilar
-            chiroqchi_users = session.query(User).filter_by(branch_type='parasite', is_authorized=True).all()
-            
-            text = (f"👋 Xush kelibsiz Admin!\n\n"
-                    f"📊 <b>QATLAMLAR STATISTIKASI</b>\n"
-                    f"👑 Asosiy qatlam: {main_products} ta tovar\n")
-            
-            if chiroqchi_users:
-                for cu in chiroqchi_users:
-                    user_products = session.query(Product).filter_by(
-                        owner_type='parasite', 
-                        owner_id=cu.id,
-                        is_active=True
-                    ).count()
-                    text += f"🐝 {cu.branch_name}: {user_products} ta tovar\n"
-            else:
-                text += f"🐝 Chiroqchi qatlami: {chiroqchi_products} ta tovar\n"
-            
-            text += f"\n📌 <b>Qatlamlar haqida:</b>\n"
-            text += f"• Asosiy qatlam - siz va Shahrisabz ko'rasiz\n"
-            text += f"• Chiroqchi qatlami - faqat Chiroqchi o'zi ko'radi\n\n"
-            text += f"Kerakli bo'limni tanlang:"
-            
-            await update.message.reply_text(
-                text, 
-                reply_markup=get_main_keyboard(user_is_admin=True),
-                parse_mode='HTML'
-            )
-            logger.info(f"✅ Admin bosh menyu: {user.id}")
-            
-        elif db_user.branch_type == 'parasite':
-            # Parazit (Chiroqchi) uchun
-            my_products = session.query(Product).filter_by(
-                owner_type='parasite', 
-                owner_id=db_user.id,
-                is_active=True
-            ).count()
-            
-            main_products = session.query(Product).filter_by(
-                owner_type='main',
-                is_active=True
-            ).count()
-            
-            text = (f"👋 Xush kelibsiz {db_user.branch_name}!\n\n"
-                    f"📊 <b>SIZNING STATISTIKANGIZ</b>\n"
-                    f"🐝 Sizning tovarlaringiz: {my_products} ta\n"
-                    f"👑 Asosiy tovarlar: {main_products} ta\n\n"
-                    f"📌 <b>Ma'lumot:</b>\n"
-                    f"• Asosiy tovarlar - Admin qo'shgan, hamma ko'radi\n"
-                    f"• Sizning tovarlaringiz - faqat siz ko'rasiz\n\n"
-                    f"Kerakli bo'limni tanlang:")
-            
-            await update.message.reply_text(
-                text, 
-                reply_markup=get_main_keyboard(
-                    user_is_admin=False, 
-                    user_branch_type='parasite',
-                    user_branch_name=db_user.branch_name
-                ),
-                parse_mode='HTML'
-            )
-            logger.info(f"✅ Chiroqchi bosh menyu: {db_user.branch_name}")
-            
-        elif db_user.is_authorized:
-            # Shahrisabz yoki boshqa foydalanuvchilar
-            text = (f"👋 Xush kelibsiz {user.first_name}!\n\n"
-                    f"Kerakli bo'limni tanlang:")
-            await update.message.reply_text(
-                text, 
-                reply_markup=get_main_keyboard(user_is_admin=False)
-            )
-            logger.info(f"✅ Foydalanuvchi bosh menyu: {user.id}")
-        else:
-            text = (f"👋 Xush kelibsiz {user.first_name}!\n\n"
-                    f"❌ Botdan foydalanish uchun ruxsat kerak.\n"
-                    f"ID raqamingiz: <code>{user.id}</code>\n\n"
-                    f"Ruxsat so'rash uchun pastdagi tugmani bosing.")
-            await update.message.reply_text(
-                text,
-                reply_markup=get_access_request_keyboard(),
-                parse_mode='HTML'
-            )
-            logger.info(f"❌ Ruxsatsiz foydalanuvchi: {user.id}")
+        await show_main_menu(update, context, user.id)
     
     except Exception as e:
         logger.error(f"Start handlerda xatolik: {e}")
@@ -729,9 +742,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Kategoriya ichida kategoriya ochish
 • Kategoriyaga tovar qo'shish
 
-<b>📊 Qatlamlar (Admin):</b>
-• 👑 Asosiy qatlam - Admin va Shahrisabz
-• 🐝 Chiroqchi qatlami - faqat Chiroqchi
+<b>📊 Filiallar (Admin):</b>
+• 👑 Asosiy filial - Admin va Shahrisabz
+• 🐝 Chiroqchi filiali - faqat Chiroqchi
 
 <b>➕ Tovar qo'shish:</b>
 • Nomi, rasmi, narxlari
@@ -740,7 +753,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 <b>👥 Foydalanuvchilar (Admin):</b>
 • Ruxsat berish/olib tashlash
-• Qatlamni o'zgartirish
+• Filialni o'zgartirish
 
 📞 <b>Admin:</b> @maestro_o
     """
@@ -844,9 +857,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Asosiy menyu
         if data == "main_menu":
-            # Xabarni o'chirib, start ni chaqirish
             await query.delete_message()
-            await start(update, context)
+            await show_main_menu(update, context, user.id)
             return
         
         # Qidirish
@@ -910,52 +922,60 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             if data.startswith("approve_req_"):
-                # Avval qatlam tanlash uchun keyboard ko'rsatamiz
+                # Foydalanuvchini olish
+                target_user = request.user
+                if not target_user:
+                    await query.edit_message_text("❌ Foydalanuvchi topilmadi!")
+                    return
+                
+                # Qatlam tanlash uchun keyboard ko'rsatamiz
                 await query.edit_message_text(
-                    f"👤 {request.user.first_name} uchun qatlamni tanlang:",
-                    reply_markup=get_branch_keyboard(request.user.id)
+                    f"👤 {target_user.first_name} uchun filialni tanlang:",
+                    reply_markup=get_branch_keyboard(target_user.id)
                 )
-                # So'rovni tasdiqlangan deb belgilaymiz
                 request.status = 'approved'
                 session.commit()
-                logger.info(f"So'rov qabul qilindi, qatlam tanlash kutilmoqda: {request.user.id}")
+                logger.info(f"So'rov qabul qilindi, filial tanlash kutilmoqda: {target_user.id}")
             else:
                 request.status = 'rejected'
                 session.commit()
-                logger.info(f"So'rov rad etildi: {request.user.id}")
+                logger.info(f"So'rov rad etildi: {request.user_id}")
                 
-                try:
-                    await context.bot.send_message(
-                        request.user.telegram_id,
-                        "❌ Sizning so'rovingiz rad etildi."
-                    )
-                except Exception as e:
-                    logger.error(f"Foydalanuvchiga xabar yuborishda xatolik: {e}")
+                # Foydalanuvchiga xabar
+                target_user = request.user
+                if target_user:
+                    try:
+                        await context.bot.send_message(
+                            target_user.telegram_id,
+                            "❌ Sizning so'rovingiz rad etildi."
+                        )
+                    except Exception as e:
+                        logger.error(f"Foydalanuvchiga xabar yuborishda xatolik: {e}")
                 
                 await query.edit_message_text(
-                    f"❌ Foydalanuvchi {request.user.first_name} rad etildi!",
+                    f"❌ Foydalanuvchi {target_user.first_name if target_user else 'Noma\'lum'} rad etildi!",
                     reply_markup=get_back_main_buttons("users")
                 )
             return
         
-        # Qatlamlar (faqat admin)
+        # Filiallar (faqat admin)
         if data == "layers":
             if not db_user.is_admin:
                 await query.edit_message_text("❌ Bu bo'lim faqat Admin uchun!")
                 return
             
-            # Qatlamlar statistikasi
+            # Filiallar statistikasi
             main_count = session.query(Product).filter_by(owner_type='main', is_active=True).count()
             chiroqchi_count = session.query(Product).filter_by(owner_type='parasite', is_active=True).count()
             
             # Chiroqchi foydalanuvchilarni topish
             chiroqchi_users = session.query(User).filter_by(branch_type='parasite', is_authorized=True).all()
             
-            text = (f"📊 <b>QATLAMLAR (LAYERS)</b>\n\n"
-                    f"👑 <b>Asosiy qatlam:</b>\n"
+            text = (f"📊 <b>FILIALLAR</b>\n\n"
+                    f"👑 <b>Asosiy filial:</b>\n"
                     f"   • Tovarlar soni: {main_count} ta\n"
                     f"   • Kimlar ko'radi: Admin, Shahrisabz\n\n"
-                    f"🐝 <b>Chiroqchi qatlami:</b>\n"
+                    f"🐝 <b>Chiroqchi filiali:</b>\n"
                     f"   • Jami tovarlar: {chiroqchi_count} ta\n")
             
             if chiroqchi_users:
@@ -970,7 +990,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 text += "   • Hali foydalanuvchilar yo'q\n"
             
-            text += f"\n📌 Qaysi qatlamni ko'rmoqchisiz?"
+            text += f"\n📌 Qaysi filialni ko'rmoqchisiz?"
             
             await query.edit_message_text(
                 text,
@@ -979,12 +999,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Asosiy qatlam
+        # Asosiy filial
         if data == "layer_main":
             await layer_main_handler(update, context, session, db_user)
             return
         
-        # Chiroqchi qatlami
+        # Chiroqchi filiali
         if data == "layer_chiroqchi":
             await layer_chiroqchi_handler(update, context, session, db_user)
             return
@@ -1168,7 +1188,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reject_user_handler(update, context, session, db_user)
             return
         
-        # Qatlamni o'zgartirish
+        # Filialni o'zgartirish
         if data.startswith("change_branch_"):
             if not db_user.is_admin:
                 await query.edit_message_text("❌ Ruxsat yo'q!")
@@ -1177,7 +1197,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await change_branch_handler(update, context, session, db_user)
             return
         
-        # Qatlamni o'rnatish
+        # Filialni o'rnatish
         if data.startswith("set_branch_"):
             if not db_user.is_admin:
                 await query.edit_message_text("❌ Ruxsat yo'q!")
@@ -1358,6 +1378,7 @@ async def save_product_with_category(update: Update, context: ContextTypes.DEFAU
             quantity=context.user_data['new_product'].get('quantity', 0),
             keywords=context.user_data['new_product'].get('keywords', ''),
             media_group_message_id=context.user_data['new_product'].get('media_message_id'),
+            media_file_id=context.user_data['new_product'].get('media_file_id'),
             is_active=True
         )
         session.add(product)
@@ -1388,7 +1409,7 @@ async def save_product_with_category(update: Update, context: ContextTypes.DEFAU
             f"✅ Tovar muvaffaqiyatli qo'shildi!\n"
             f"🆔 Tovar ID: {product.id}\n"
             f"👤 Egasi: {owner_text}\n"
-            f"📊 Qatlam: {'Asosiy' if product.owner_type == 'main' else 'Chiroqchi'}",
+            f"📊 Filial: {'Asosiy' if product.owner_type == 'main' else 'Chiroqchi'}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Orqaga", callback_data=f"cat_{category_id}")],
                 [InlineKeyboardButton("🏠 Bosh menyu", callback_data="main_menu")]
@@ -1578,7 +1599,7 @@ async def add_product_start_handler(update: Update, context: ContextTypes.DEFAUL
         back_callback = "main_menu"
     
     elif data == "add_product_user":
-        # Oddiy foydalanuvchi uchun (faqat asosiy qatlamga)
+        # Oddiy foydalanuvchi uchun (faqat asosiy filialga)
         if not db_user.is_authorized:
             await query.edit_message_text("❌ Tovar qo'shish uchun ruxsat kerak!")
             return
@@ -1749,21 +1770,21 @@ async def delete_product_handler(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await query.edit_message_text("❌ Siz bu tovarni o'chira olmaysiz!")
 
-# ==================== QATLAM HANDLERLARI ====================
+# ==================== FILIAL HANDLERLARI ====================
 
 async def layer_main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, session, db_user):
-    """Asosiy qatlam tovarlarini ko'rsatish"""
+    """Asosiy filial tovarlarini ko'rsatish"""
     query = update.callback_query
     
     try:
-        # Asosiy qatlam tovarlari
+        # Asosiy filial tovarlari
         products = session.query(Product).filter_by(owner_type='main', is_active=True).all()
         
-        text = "👑 <b>ASOSIY QATLAM (MAIN LAYER)</b>\n\n"
+        text = "👑 <b>ASOSIY FILIAL</b>\n\n"
         text += f"Jami tovarlar: {len(products)} ta\n\n"
         
         if not products:
-            text += "Asosiy qatlamda tovarlar yo'q."
+            text += "Asosiy filialda tovarlar yo'q."
             await query.edit_message_text(text, reply_markup=get_back_main_buttons("layers"), parse_mode='HTML')
             return
         
@@ -1806,14 +1827,14 @@ async def layer_main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await query.edit_message_text("❌ Xatolik yuz berdi")
 
 async def layer_chiroqchi_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, session, db_user):
-    """Chiroqchi qatlami tovarlarini ko'rsatish"""
+    """Chiroqchi filiali tovarlarini ko'rsatish"""
     query = update.callback_query
     
     try:
         # Chiroqchi foydalanuvchilarni topish
         chiroqchi_users = session.query(User).filter_by(branch_type='parasite', is_authorized=True).all()
         
-        text = "🐝 <b>CHIROQCHI QATLAMI</b>\n\n"
+        text = "🐝 <b>CHIROQCHI FILIALI</b>\n\n"
         
         if not chiroqchi_users:
             text += "Chiroqchi foydalanuvchilar yo'q."
@@ -1892,7 +1913,7 @@ async def user_detail_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"📝 Ism: {target_user.first_name or 'Noma\'lum'}\n"
                 f"👤 Username: @{target_user.username or 'yoq'}\n"
                 f"📊 Status: {status}\n"
-                f"🏛 Qatlam: {branch_type}\n"
+                f"🏛 Filial: {branch_type}\n"
                 f"📦 Tovarlari: {products_count} ta\n"
                 f"📅 Qo'shilgan: {target_user.created_at.strftime('%d.%m.%Y')}")
         
@@ -1913,9 +1934,9 @@ async def approve_user_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     target_user = session.query(User).filter_by(id=user_id).first()
     
     if target_user:
-        # Avval qatlam tanlash uchun keyboard ko'rsatamiz
+        # Avval filial tanlash uchun keyboard ko'rsatamiz
         await query.edit_message_text(
-            f"👤 {target_user.first_name} uchun qatlamni tanlang:",
+            f"👤 {target_user.first_name} uchun filialni tanlang:",
             reply_markup=get_branch_keyboard(target_user.id)
         )
     else:
@@ -1949,7 +1970,7 @@ async def reject_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("❌ Foydalanuvchi topilmadi!")
 
 async def change_branch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, session, db_user):
-    """Foydalanuvchi qatlamini o'zgartirish"""
+    """Foydalanuvchi filialini o'zgartirish"""
     query = update.callback_query
     data = query.data
     user_id = int(data.split("_")[2])
@@ -1958,14 +1979,14 @@ async def change_branch_handler(update: Update, context: ContextTypes.DEFAULT_TY
     
     if target_user:
         await query.edit_message_text(
-            f"👤 {target_user.first_name} uchun qatlamni tanlang:",
+            f"👤 {target_user.first_name} uchun filialni tanlang:",
             reply_markup=get_branch_keyboard(target_user.id)
         )
     else:
         await query.edit_message_text("❌ Foydalanuvchi topilmadi!")
 
 async def set_branch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, session, db_user):
-    """Foydalanuvchi qatlamini o'rnatish"""
+    """Foydalanuvchi filialini o'rnatish"""
     query = update.callback_query
     data = query.data
     parts = data.split("_")
@@ -1991,17 +2012,17 @@ async def set_branch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         target_user.is_authorized = True
         session.commit()
-        logger.info(f"Qatlam o'zgartirildi: {target_user.id} -> {branch}")
+        logger.info(f"Filial o'zgartirildi: {target_user.id} -> {branch}")
         
         await query.edit_message_text(
-            f"✅ {target_user.first_name} uchun qatlam o'zgartirildi: {branch}",
+            f"✅ {target_user.first_name} uchun filial o'zgartirildi: {branch}",
             reply_markup=get_back_main_buttons("users")
         )
         
         try:
             await context.bot.send_message(
                 target_user.telegram_id,
-                f"✅ Sizning qatlammingiz o'zgartirildi: {branch}\n"
+                f"✅ Sizning filialingiz o'zgartirildi: {branch}\n"
                 f"/start ni bosing."
             )
         except Exception as e:
@@ -2048,7 +2069,7 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sess
     total_selling_uzs = sum((p.selling_price_uzs or 0) * (p.quantity or 0) for p in products)
     categories = session.query(Category).count()
     
-    # Qatlamlar bo'yicha statistika
+    # Filiallar bo'yicha statistika
     main_products = session.query(Product).filter_by(owner_type='main', is_active=True).count()
     parasite_products = session.query(Product).filter_by(owner_type='parasite', is_active=True).count()
     
@@ -2056,8 +2077,8 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sess
             f"📦 Jami tovarlar: {total_products}\n"
             f"📂 Kategoriyalar: {categories}\n"
             f"🔢 Jami soni: {total_quantity} dona\n\n"
-            f"👑 Asosiy qatlam: {main_products} ta\n"
-            f"🐝 Parazit qatlam: {parasite_products} ta\n\n"
+            f"👑 Asosiy filial: {main_products} ta\n"
+            f"🐝 Chiroqchi filiali: {parasite_products} ta\n\n"
             f"💰 <b>Kelgan narxi (jami):</b>\n")
     
     if total_purchase_usd > 0:
@@ -2075,7 +2096,7 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sess
         profit_usd = total_selling_usd - total_purchase_usd
         text += f"\n📈 Potensial foyda ($): {profit_usd:,.0f}\n"
     
-    text += f"\n🕐 Yangilangan: {datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
+    text += f"\n🕐 Yangilangan: {datetime.now(TASHKENT_TZ).strftime('%H:%M:%S %d.%m.%Y')}"
     
     await query.edit_message_text(
         text, 
@@ -2098,8 +2119,8 @@ async def export_excel_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await context.bot.send_document(
                 chat_id=update.effective_user.id,
                 document=f,
-                filename=f"tovarlar_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                caption="✅ Tovarlar ro'yxati (barcha qatlamlar bilan)"
+                filename=f"tovarlar_{datetime.now(TASHKENT_TZ).strftime('%Y%m%d_%H%M%S')}.xlsx",
+                caption="✅ Tovarlar ro'yxati (barcha filiallar bilan)"
             )
         
         os.remove(filename)
@@ -2120,7 +2141,7 @@ async def download_backup_handler(update: Update, context: ContextTypes.DEFAULT_
             await context.bot.send_document(
                 chat_id=update.effective_user.id,
                 document=f,
-                filename=f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
+                filename=f"backup_{datetime.now(TASHKENT_TZ).strftime('%Y%m%d_%H%M%S')}.db",
                 caption="✅ Ma'lumotlar bazasi backup fayli"
             )
         
@@ -2474,9 +2495,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_user = session.query(User).filter_by(telegram_id=target_id).first()
                 
                 if target_user:
-                    # Qatlam tanlash uchun keyboard ko'rsatamiz
+                    # Filial tanlash uchun keyboard ko'rsatamiz
                     await update.message.reply_text(
-                        f"👤 {target_user.first_name} uchun qatlamni tanlang:",
+                        f"👤 {target_user.first_name} uchun filialni tanlang:",
                         reply_markup=get_branch_keyboard(target_user.id)
                     )
                     logger.info(f"Ruxsat berish jarayoni: {target_id}")
@@ -2525,6 +2546,7 @@ async def save_product_with_category_from_message(update: Update, context: Conte
             quantity=context.user_data['new_product'].get('quantity', 0),
             keywords=context.user_data['new_product'].get('keywords', ''),
             media_group_message_id=context.user_data['new_product'].get('media_message_id'),
+            media_file_id=context.user_data['new_product'].get('media_file_id'),
             is_active=True
         )
         session.add(product)
@@ -2555,7 +2577,7 @@ async def save_product_with_category_from_message(update: Update, context: Conte
             f"✅ Tovar muvaffaqiyatli qo'shildi!\n"
             f"🆔 Tovar ID: {product.id}\n"
             f"👤 Egasi: {owner_text}\n"
-            f"📊 Qatlam: {'Asosiy' if product.owner_type == 'main' else 'Chiroqchi'}",
+            f"📊 Filial: {'Asosiy' if product.owner_type == 'main' else 'Chiroqchi'}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Orqaga", callback_data=f"cat_{category_id}")],
                 [InlineKeyboardButton("🏠 Bosh menyu", callback_data="main_menu")]
@@ -2704,7 +2726,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Excel fayl import
         if state == IMPORT_WAITING and (file_name.endswith('.xlsx') or file_name.endswith('.xls')):
             file = await document.get_file()
-            filename = f"data/import_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filename = f"data/import_{datetime.now(TASHKENT_TZ).strftime('%Y%m%d_%H%M%S')}.xlsx"
             await file.download_to_drive(filename)
             
             await update.message.reply_text("⏳ Import qilinmoqda...")
@@ -2729,7 +2751,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Backup fayl tiklash
         elif state == RESTORE_WAITING and file_name.endswith('.db'):
             file = await document.get_file()
-            filename = f"data/restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            filename = f"data/restore_{datetime.now(TASHKENT_TZ).strftime('%Y%m%d_%H%M%S')}.db"
             await file.download_to_drive(filename)
             
             await update.message.reply_text("⏳ Backup tiklanmoqda...")
@@ -2785,8 +2807,8 @@ def main():
     print("""
     ╔════════════════════════════════════╗
     ║     DO'KON BOSHQARUVI BOTI         ║
-    ║         QATLAMLI TIZIM              ║
-    ║         Versiya: 4.1                ║
+    ║         FILIALLI TIZIM              ║
+    ║         Versiya: 4.2                ║
     ║         @maestro_o                  ║
     ╚════════════════════════════════════╝
     """)
@@ -2869,8 +2891,8 @@ def main():
     print("\n" + "="*50)
     print("🚀 BOT ISHGA TUSHIRILMOQDA...")
     print("="*50)
-    print(f"🕐 Vaqt: {datetime.now().strftime('%H:%M:%S')}")
-    print(f"📅 Sana: {datetime.now().strftime('%d.%m.%Y')}")
+    print(f"🕐 Vaqt: {datetime.now(TASHKENT_TZ).strftime('%H:%M:%S')}")
+    print(f"📅 Sana: {datetime.now(TASHKENT_TZ).strftime('%d.%m.%Y')}")
     print("="*50 + "\n")
     
     logger.info("🎉 Bot muvaffaqiyatli ishga tushdi!")
